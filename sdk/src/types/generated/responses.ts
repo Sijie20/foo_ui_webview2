@@ -7057,6 +7057,12 @@ export type WindowGetBackdropPolicyResponse = WindowGetBackdropPolicySuccess | A
 export interface WindowGetBoundsSuccess {
     /** Always `true` here; a failed call resolves with `ApiFailure` instead. */
     success: true;
+    /** Client width in physical pixels, independently measured with GetClientRect. */
+    clientWidth: number;
+    /** Client height in physical pixels, independently measured with GetClientRect. */
+    clientHeight: number;
+    /** Current native window DPI (96 = 100%). */
+    dpi: number;
     /** Left edge in screen coordinates. */
     x: number;
     /** Top edge in screen coordinates. */

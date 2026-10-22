@@ -4,6 +4,7 @@
 #include "window/WindowGeometryMath.h"
 #include "webview/WebViewHost.h"
 #include "api/EventEmit.h"
+#include "api/WindowApi.h"
 #include "api/generated/WindowSchema.h"
 
 // ============================================
@@ -26,7 +27,7 @@ void MainWindow::OnDpiChanged(WPARAM wParam, LPARAM lParam) {
     
     // 应用新的窗口大小
     RECT* suggested = reinterpret_cast<RECT*>(lParam);
-    SetWindowPos(hwnd_, nullptr, 
+    if (suggested) SetWindowPos(hwnd_, nullptr,
         suggested->left, suggested->top,
         suggested->right - suggested->left,
         suggested->bottom - suggested->top,
@@ -35,7 +36,8 @@ void MainWindow::OnDpiChanged(WPARAM wParam, LPARAM lParam) {
     // DPI 提高后，系统建议的尺寸可能已低于新 DPI 下的物理最小值。
     // WM_GETMINMAXINFO 只约束后续的拖拽/程序化改尺寸，不会追认这次
     // 系统主动施加的尺寸，故此处主动 revalidate（Q9-c）。
-    RevalidateSizeAgainstConstraints();
+    if (IsFullscreen()) ReflowFullscreenWindow(hwnd_);
+    else RevalidateSizeAgainstConstraints();
     
     // 通知 WebView DPI 变化
     if (webView_ && webView_->IsReady()) {

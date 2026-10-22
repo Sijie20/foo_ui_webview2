@@ -620,8 +620,11 @@ inline bool FromJson(const json& j, ToggleAlwaysOnTopParams&, std::string& error
 }
 
 struct GetBoundsResult {
-    static constexpr std::array<std::string_view, 4> kFields{{"x", "y", "width", "height"}};
+    static constexpr std::array<std::string_view, 7> kFields{{"clientWidth", "clientHeight", "dpi", "x", "y", "width", "height"}};
 
+    std::int64_t clientWidth{};
+    std::int64_t clientHeight{};
+    std::int64_t dpi{};
     std::int64_t x{};
     std::int64_t y{};
     std::int64_t width{};
@@ -630,6 +633,9 @@ struct GetBoundsResult {
 
 inline json ToJson(const GetBoundsResult& v) {
     json j = json::object();
+    api::results::Put(j, "clientWidth", v.clientWidth);
+    api::results::Put(j, "clientHeight", v.clientHeight);
+    api::results::Put(j, "dpi", v.dpi);
     api::results::Put(j, "x", v.x);
     api::results::Put(j, "y", v.y);
     api::results::Put(j, "width", v.width);

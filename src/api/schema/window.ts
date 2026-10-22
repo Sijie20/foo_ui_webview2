@@ -1091,6 +1091,12 @@ interface ToggleAlwaysOnTopResult {
 }
 
 interface GetBoundsResult {
+  /** Client width in physical pixels, independently measured with GetClientRect. */
+  clientWidth: Int;
+  /** Client height in physical pixels, independently measured with GetClientRect. */
+  clientHeight: Int;
+  /** Current native window DPI (96 = 100%). */
+  dpi: Int;
   /**
    * Left edge in screen coordinates.
    * @zh 左边缘的屏幕坐标。

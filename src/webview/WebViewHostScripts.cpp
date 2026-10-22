@@ -18,6 +18,20 @@ void WebViewHost::InjectBridgeScript() {
     const wchar_t* bridgeScript = kBridgeBootstrapScript;
     
     webview_->AddScriptToExecuteOnDocumentCreated(bridgeScript, nullptr);
+    // Window capture sees Esc even when a child stops propagation. A task (not
+    // a microtask) waits until React/document handlers have consumed the event.
+    webview_->AddScriptToExecuteOnDocumentCreated(LR"JS(
+        (() => {
+            if (window !== window.top) return;
+            window.addEventListener('keydown', event => {
+                if (!event.isTrusted || event.key !== 'Escape' || event.repeat ||
+                    event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return;
+                setTimeout(() => window.chrome.webview.postMessage({
+                    __fooFullscreenEscape: event.defaultPrevented || event.isComposing
+                }), 0);
+            }, true);
+        })();
+    )JS", nullptr);
     LOG("Bridge script injected");
 
     // Internal windowReady auto-signal + overlay-gone detection for visualReady (true reveal authority)

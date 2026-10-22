@@ -137,4 +137,5 @@ public:
         DWORD corner_preference = 0;
     };
     std::optional<SavedWindowInfo> savedWindowInfo_;
+    bool fullscreenGeometryUpdating_ = false; // SetWindowPos may reenter via DPI/size messages.
 };

@@ -7,6 +7,7 @@
 #include "pch.h"
 #include "webview/WebViewHost.h"
 #include "api/ErrorEnvelope.h"
+#include "api/WindowApi.h"
 #include "webview/dnd/DndTrace.h"
 #include "window/WindowBehaviorTrace.h"
 #include <wrl/event.h>
@@ -56,8 +57,15 @@ void WebViewHost::RegisterMessageHandler() {
                 }
                 
                 if (wil::unique_cotaskmem_string message;
-                    SUCCEEDED(args->get_WebMessageAsJson(&message)) && message && messageHandler_) {
-                    messageHandler_(message.get());
+                    SUCCEEDED(args->get_WebMessageAsJson(&message)) && message) {
+                    const auto internal = json::parse(
+                        pfc::stringcvt::string_utf8_from_wide(message.get()).get_ptr(), nullptr, false);
+                    if (internal.is_object() && internal.contains("__fooFullscreenEscape") &&
+                        internal["__fooFullscreenEscape"].is_boolean()) {
+                        CompleteFullscreenEscape(parentHwnd_, internal["__fooFullscreenEscape"].get<bool>());
+                        return S_OK;
+                    }
+                    if (messageHandler_) messageHandler_(message.get());
                 }
                 
                 return S_OK;

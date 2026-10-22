@@ -16,8 +16,7 @@ void WebViewHost::SetupWebView() {
     // 设置边界 - 填满父窗口
     RECT bounds;
     GetClientRect(parentHwnd_, &bounds);
-    window_behavior_trace::Com(parentHwnd_, "controller.put_Bounds", bounds);
-    controller_->put_Bounds(bounds);
+    Resize(bounds);
     
     // ============================================
     // 设置透明背景以支持 DWM 效果穿透

@@ -117,3 +117,11 @@ bool IsWindowFullscreen();
 // WM_SYSCOMMAND 等场景下，参考 Electron / Tauri 行为，将这些操作路由到先退出全屏。
 // 同时支持 main 与 popup（通过 WindowTargetResolver::ResolveByCallerHwnd 解析 shell）。
 bool ExitFullscreenIfActive(HWND hwnd);
+
+// Reconcile fullscreen + saved restore geometry after DPI/display/work-area changes.
+void ReflowFullscreenWindow(HWND hwnd);
+// Real Esc is delivered to the DOM first; an unresponsive page has a native timeout.
+void BeginFullscreenEscape(HWND hwnd);
+void CompleteFullscreenEscape(HWND hwnd, bool consumed);
+class WebViewHost;
+bool HandleNativeFullscreenKey(HWND hwnd, WPARAM key, LPARAM flags, WebViewHost* host);

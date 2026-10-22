@@ -939,6 +939,9 @@ const result = await fb2k.invoke('window.getAllWindows');
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
+| `clientWidth` | `integer` | Client width in physical pixels, independently measured with GetClientRect. |
+| `clientHeight` | `integer` | Client height in physical pixels, independently measured with GetClientRect. |
+| `dpi` | `integer` | Current native window DPI (96 = 100%). |
 | `x` | `integer` | 左边缘的屏幕坐标。 |
 | `y` | `integer` | 上边缘的屏幕坐标。 |
 | `width` | `integer` | 宽度，物理像素，含边框。 |

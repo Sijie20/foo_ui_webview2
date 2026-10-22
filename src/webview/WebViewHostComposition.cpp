@@ -50,17 +50,15 @@ void WebViewHost::RefreshForDwmEffect() {
     if (!controller_ || !parentHwnd_) return;
     
     // 方法 1: 触发 WebView 边界重设来刷新合成器
-    RECT bounds;
-    if (SUCCEEDED(controller_->get_Bounds(&bounds))) {
+    const RECT physicalClip = physicalBounds_;
+    {
         // 微调边界强制刷新
-        RECT adjustedBounds = bounds;
-        adjustedBounds.right -= 1;
-        window_behavior_trace::Com(parentHwnd_, "controller.put_Bounds", adjustedBounds);
-        controller_->put_Bounds(adjustedBounds);
+        RECT adjustedBounds = physicalClip;
+        if (adjustedBounds.right > adjustedBounds.left) adjustedBounds.right -= 1;
+        ApplyControllerBounds(adjustedBounds);
         
         // 立即恢复
-        window_behavior_trace::Com(parentHwnd_, "controller.put_Bounds", bounds);
-        controller_->put_Bounds(bounds);
+        ApplyControllerBounds(physicalClip);
     }
 
     // RefreshForDwmEffect 与 Resize 一样会经过 put_Bounds，
@@ -78,12 +76,12 @@ void WebViewHost::RefreshForDwmEffect() {
     // 方法 1.5: 强制 DComp visual tree 标记为 dirty 再 Commit，
     // 仅 Commit 无 pending changes 时是 no-op，DComp compositor 不会触发重新合成。
     // SetClip 即使值相同也会标记 visual 为 dirty，触发完整重新合成以拾取 DWM backdrop。
-    if (dcompRootVisual_ && SUCCEEDED(controller_->get_Bounds(&bounds))) {
+    if (dcompRootVisual_) {
         D2D1_RECT_F clipRect = {
-            (float)bounds.left, (float)bounds.top,
-            (float)bounds.right, (float)bounds.bottom
+            (float)physicalClip.left, (float)physicalClip.top,
+            (float)physicalClip.right, (float)physicalClip.bottom
         };
-        window_behavior_trace::Com(parentHwnd_, "dcomp.SetClip", bounds);
+        window_behavior_trace::Com(parentHwnd_, "dcomp.SetClip", physicalClip);
         dcompRootVisual_->SetClip(clipRect);
     }
     if (dcompDevice_) {

@@ -485,6 +485,7 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         // 调用 ExitFullscreenIfActive，到达此处时已不在全屏，本拦截器不会重复触发。
         case WM_SYSCOMMAND: {
             const UINT cmd = static_cast<UINT>(wParam) & 0xFFF0;
+            if (cmd == SC_CLOSE && ExitFullscreenIfActive(hwnd_)) return 0;
             // 最小化/关闭到托盘
             if (cmd == SC_MINIMIZE && TrayIcon::GetInstance().GetMinimizeToTray()) {
                 HideWindowToTray();
@@ -523,6 +524,7 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
             
         case WM_CLOSE:
+            if (ExitFullscreenIfActive(hwnd_)) return 0;
             // closeToTray 时，任何关闭路径（含任务栏右键"关闭窗口"、缩略图关闭等
             // 直接发 WM_CLOSE 的来源）都应隐藏到托盘而非退出 foobar2000，与 SC_CLOSE
             // 分支语义一致。真正的"退出"由托盘 Exit 菜单 / foobar File→Exit 直接执行
@@ -928,7 +930,8 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            OnSize(LOWORD(lParam), HIWORD(lParam));
+            RECT physicalClient{};
+            if (GetClientRect(hwnd_, &physicalClient)) OnSize(physicalClient.right, physicalClient.bottom);
 
             // 补做最小化期间被推迟的约束校正（见 RevalidateSizeAgainstConstraints
             // 的 iconic 分支）。此时窗口已回到还原态，几何可安全改写。
@@ -1021,6 +1024,16 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_DPICHANGED:
             OnDpiChanged(wParam, lParam);
             return 0;
+
+        case WM_DISPLAYCHANGE:
+        case WM_SETTINGCHANGE: {
+            ReflowFullscreenWindow(hwnd_);
+            if (webView_ && !isMinimized_) {
+                RECT physicalClient{};
+                if (GetClientRect(hwnd_, &physicalClient)) webView_->Resize(physicalClient);
+            }
+            break; // retain the system's setting-change handling
+        }
             
         case WM_GETMINMAXINFO: {
             auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
@@ -1086,6 +1099,7 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
             
         case WM_KEYDOWN:
+            if (HandleNativeFullscreenKey(hwnd_, wParam, lParam, webView_.get())) return 0;
             // F12 to open DevTools (仅开发服务器模式允许)
             if (wParam == VK_F12 && webView_ && webView_->IsReady()) {
                 if (security_config::UseDevServer()) {

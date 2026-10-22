@@ -444,6 +444,9 @@ This method takes no parameters.
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `clientWidth` | `integer` | Client width in physical pixels, independently measured with GetClientRect. |
+| `clientHeight` | `integer` | Client height in physical pixels, independently measured with GetClientRect. |
+| `dpi` | `integer` | Current native window DPI (96 = 100%). |
 | `x` | `integer` | Left edge in screen coordinates. |
 | `y` | `integer` | Top edge in screen coordinates. |
 | `width` | `integer` | Width in physical pixels, frame included. |

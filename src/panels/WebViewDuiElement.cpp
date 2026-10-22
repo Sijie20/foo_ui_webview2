@@ -149,6 +149,17 @@ LRESULT CALLBACK WebViewDuiElementInstance::WndProc(HWND hwnd, UINT msg, WPARAM 
 
 LRESULT WebViewDuiElementInstance::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+        case WM_DPICHANGED:
+            if (auto* suggested = reinterpret_cast<RECT*>(lParam)) {
+                RECT bounds = *suggested;
+                if (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD)
+                    MapWindowPoints(nullptr, GetParent(hwnd), reinterpret_cast<POINT*>(&bounds), 2);
+                SetWindowPos(hwnd, nullptr, bounds.left, bounds.top, bounds.right-bounds.left,
+                    bounds.bottom-bounds.top, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            [[fallthrough]];
+        case WM_DPICHANGED_AFTERPARENT:
+        case WM_DISPLAYCHANGE:
         case WM_SIZE: {
             // 编辑模式下不调整 WebView bounds，保持隐藏状态
             // 否则 ResizeWebView 会将 bounds 恢复为完整客户区，

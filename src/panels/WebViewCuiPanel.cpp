@@ -236,15 +236,23 @@ LRESULT CALLBACK WebViewCuiPanel::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
 
 LRESULT WebViewCuiPanel::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+        case WM_DPICHANGED:
+            // Child windows use parent coordinates; the system suggested RECT
+            // (when supplied) is in screen coordinates.
+            if (auto* suggested = reinterpret_cast<RECT*>(lParam)) {
+                RECT bounds = *suggested;
+                if (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD)
+                    MapWindowPoints(nullptr, GetParent(hwnd), reinterpret_cast<POINT*>(&bounds), 2);
+                SetWindowPos(hwnd, nullptr, bounds.left, bounds.top, bounds.right-bounds.left,
+                    bounds.bottom-bounds.top, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            [[fallthrough]];
+        case WM_DPICHANGED_AFTERPARENT:
+        case WM_DISPLAYCHANGE:
         case WM_SIZE: {
-            int width = LOWORD(lParam);
-            int height = HIWORD(lParam);
-            
             if (auto* webView = GetWebView()) {
-                if (auto* controller = webView->GetController()) {
-                    RECT bounds = {0, 0, width, height};
-                    controller->put_Bounds(bounds);
-                }
+                RECT physicalClient{};
+                if (GetClientRect(hwnd, &physicalClient)) webView->Resize(physicalClient);
             }
             return 0;
         }

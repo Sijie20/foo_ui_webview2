@@ -7,6 +7,7 @@
 #include "pch.h"
 #include "webview/WebViewHost.h"
 #include "settings/SecurityConfig.h"
+#include "api/WindowApi.h"
 #include <wrl/event.h>
 #include <foobar2000/SDK/menu_helpers.h>  // For standard_commands
 
@@ -101,7 +102,7 @@ void WebViewHost::SetupSettings() {
     // ============================================
     controller_->add_AcceleratorKeyPressed(
         Callback<ICoreWebView2AcceleratorKeyPressedEventHandler>(
-            [](ICoreWebView2Controller* /*sender*/, ICoreWebView2AcceleratorKeyPressedEventArgs* args) {
+            [this](ICoreWebView2Controller* /*sender*/, ICoreWebView2AcceleratorKeyPressedEventArgs* args) {
                 COREWEBVIEW2_KEY_EVENT_KIND kind;
                 args->get_KeyEventKind(&kind);
                 
@@ -117,6 +118,23 @@ void WebViewHost::SetupSettings() {
                 bool isCtrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
                 bool isAlt = (GetKeyState(VK_MENU) & 0x8000) != 0;
                 bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+
+                if (key == VK_ESCAPE && !isCtrl && !isAlt && !isShift) {
+                    COREWEBVIEW2_PHYSICAL_KEY_STATUS status{};
+                    args->get_PhysicalKeyStatus(&status);
+                    if (!status.WasKeyDown) BeginFullscreenEscape(parentHwnd_);
+                    // Deliver the real event to the page. The injected observer
+                    // acknowledges defaultPrevented after all page handlers run.
+                    return S_OK;
+                }
+                if (key == VK_F11 && !isCtrl && !isAlt && !isShift) {
+                    if (ExitFullscreenIfActive(parentHwnd_)) args->put_Handled(TRUE);
+                    return S_OK;
+                }
+                if (key == VK_F4 && isAlt) {
+                    if (ExitFullscreenIfActive(parentHwnd_)) args->put_Handled(TRUE);
+                    return S_OK;
+                }
                 
                 // Ctrl+P (Preferences) - 直接调用 foobar2000 命令
                 if (key == 'P' && isCtrl && !isAlt && !isShift) {

@@ -8,9 +8,28 @@
 #include "webview/WebViewHost.h"
 #include "window/WindowBehaviorTrace.h"
 #include "window/WindowChromeTrace.h"
+#include "window/FullscreenGeometry.h"
 #include <wrl/event.h>
 
 using namespace Microsoft::WRL;
+
+void WebViewHost::ApplyControllerBounds(const RECT& physicalBounds) {
+    if (!controller_) return;
+    const UINT dpi = parentHwnd_ ? GetDpiForWindow(parentHwnd_) : 96;
+    // Keep controller coordinates explicit even if a caller changed BoundsMode.
+    wil::com_ptr<ICoreWebView2Controller3> controller3;
+    if (SUCCEEDED(controller_.try_query_to(&controller3))) {
+        controller3->put_BoundsMode(COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS);
+        controller3->put_ShouldDetectMonitorScaleChanges(TRUE);
+        controller3->put_RasterizationScale((dpi ? dpi : 96) / 96.0);
+    }
+    const auto converted = fullscreen_geometry::ControllerBoundsFromPhysical(
+        {physicalBounds.left, physicalBounds.top, physicalBounds.right, physicalBounds.bottom}, dpi);
+    const RECT controllerBounds{converted.left, converted.top, converted.right, converted.bottom};
+    window_behavior_trace::Com(parentHwnd_, "controller.put_Bounds", controllerBounds);
+    controller_->put_Bounds(controllerBounds);
+    controller_->NotifyParentWindowPositionChanged();
+}
 
 void WebViewHost::Resize(int width, int height) {
     RECT bounds = { 0, 0, width, height };
@@ -18,14 +37,14 @@ void WebViewHost::Resize(int width, int height) {
 }
 
 void WebViewHost::Resize(const RECT& bounds) {
+    physicalBounds_ = bounds;
     if (controller_) {
         // Resize 在拖拽期间每条 WM_SIZE 都被调用，无条件写控制台会在逐帧路径上
         // 产生真实开销（console::print 需格式化并投递到 fb2k 控制台）。
         if (WindowChromeTrace::AuxiliaryTraceEnabled()) {
             LOG("WebViewHost::Resize - Bounds: ", bounds.left, ",", bounds.top, " to ", bounds.right, ",", bounds.bottom);
         }
-        window_behavior_trace::Com(parentHwnd_, "controller.put_Bounds", bounds);
-        controller_->put_Bounds(bounds);
+        ApplyControllerBounds(bounds);
         
         // 如果当前是透明模式，resize 后需要重新应用透明背景
         // WebView2 的 put_Bounds 可能会重置背景颜色

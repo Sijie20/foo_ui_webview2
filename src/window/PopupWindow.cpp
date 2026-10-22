@@ -803,6 +803,7 @@ LRESULT PopupWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         }
             
         case WM_CLOSE:
+            if (ExitFullscreenIfActive(hwnd_)) return 0;
             OnClose();
             return 0;
             
@@ -906,7 +907,8 @@ LRESULT PopupWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
 
             // wasMinimized 恢复时不需手动恢复可见性，OnSize Resize 会触发布局更新
 
-            OnSize(LOWORD(lParam), HIWORD(lParam));
+            RECT physicalClient{};
+            if (GetClientRect(hwnd_, &physicalClient)) OnSize(physicalClient.right, physicalClient.bottom);
             if (wasMinimized && !startupRevealPending_ && startupRevealCommitted_ && !startupRevealSettling_) {
                 ApplyBackdropForActivation(isActive_, true);
             }
@@ -971,7 +973,8 @@ LRESULT PopupWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                     SWP_NOZORDER | SWP_NOACTIVATE);
             }
 
-            RevalidateSizeAgainstConstraints();
+            if (IsFullscreen()) ReflowFullscreenWindow(hwnd_);
+            else RevalidateSizeAgainstConstraints();
 
             // 客户区尺寸已变，重算 WebView 边界。
             RECT clientRect{};
@@ -980,7 +983,15 @@ LRESULT PopupWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
         }
-        
+        case WM_DISPLAYCHANGE:
+        case WM_SETTINGCHANGE: {
+            ReflowFullscreenWindow(hwnd_);
+            RECT physicalClient{};
+            if (!isMinimized_ && GetClientRect(hwnd_, &physicalClient))
+                OnSize(physicalClient.right, physicalClient.bottom);
+            break;
+        }
+
         case WM_TIMER:
             if (wParam == CLOSE_TIMER_ID) {
                 // beforeClose 超时，强制关闭
@@ -1053,6 +1064,7 @@ LRESULT PopupWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 menuDismissCallback_("escape", nullptr);   // 键盘路径无失活对端
                 return 0;
             }
+            if (HandleNativeFullscreenKey(hwnd_, wParam, lParam, webView_.get())) return 0;
             // F12 开发者工具（仅开发服务器模式）
             if (wParam == VK_F12 && webView_ && webView_->IsReady()) {
                 if (security_config::UseDevServer()) {
