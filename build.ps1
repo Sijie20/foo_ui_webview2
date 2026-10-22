@@ -30,14 +30,27 @@ if (-not (Test-Path $vswhere)) {
 }
 
 $vsPath = & $vswhere -latest -products * -property installationPath -prerelease
-if (-not $vsPath) {
-    Write-Host "❌ Visual Studio not found!" -ForegroundColor Red
-    exit 1
-}
 
-$msbuild = Join-Path $vsPath "MSBuild\Current\Bin\MSBuild.exe"
-if (-not (Test-Path $msbuild)) {
-    Write-Host "❌ MSBuild.exe not found at: $msbuild" -ForegroundColor Red
+# 2026-10-22：本机工具链统一放在 %USERPROFILE%\tools\ 下（根目录大扫除后移动过），
+# vswhere 仍返回旧路径，故按候选目录逐个探测；也支持 VS_BUILDTOOLS 环境变量覆盖。
+$candidates = @()
+if ($env:VS_BUILDTOOLS) { $candidates += $env:VS_BUILDTOOLS }
+if ($vsPath) { $candidates += $vsPath }
+$candidates += @(
+    (Join-Path $env:USERPROFILE "tools\vs_buildtools"),
+    (Join-Path $env:USERPROFILE "vs_buildtools"),
+    "C:\Program Files\Microsoft Visual Studio\2022\BuildTools",
+    "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
+)
+$msbuild = $null
+foreach ($candidate in $candidates) {
+    if (-not $candidate) { continue }
+    $candidateMsbuild = Join-Path $candidate "MSBuild\Current\Bin\MSBuild.exe"
+    if (Test-Path $candidateMsbuild) { $vsPath = $candidate; $msbuild = $candidateMsbuild; break }
+}
+if (-not $msbuild) {
+    Write-Host "❌ MSBuild.exe not found (vswhere: '$vsPath'; tried tools\vs_buildtools)." -ForegroundColor Red
+    Write-Host "   设置 VS_BUILDTOOLS 或安装 VS Build Tools 后重试。" -ForegroundColor Yellow
     exit 1
 }
 
