@@ -95,6 +95,12 @@
     <TargetName>foo_ui_webview2</TargetName>
   </PropertyGroup>
 
+  <!-- Release-tag sandbox is opt-in; isolate objects as well as final output. -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64' and '$(FBXSandbox)'=='1'">
+    <OutDir>$(SolutionDir)bin\Release_x64_sandbox\</OutDir>
+    <IntDir>$(SolutionDir)obj\$(ProjectName)\Release_x64_sandbox\</IntDir>
+  </PropertyGroup>
+
   <!-- 通用编译设置 -->
   <ItemDefinitionGroup>
     <ClCompile>
@@ -176,6 +182,12 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64' and '$(FBXSandbox)'=='1'">
+    <ClCompile>
+      <PreprocessorDefinitions>FBX_SANDBOXED=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
   </ItemDefinitionGroup>
 
   <!-- 源文件 -->

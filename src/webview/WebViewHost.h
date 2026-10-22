@@ -6,7 +6,9 @@
 #include "webview/ArtworkWorkerQueue.h"
 #include <dcomp.h>
 #include <atomic>
+#ifdef FBX_SANDBOXED
 #include <unordered_set>
+#endif
 
 struct MediaRouteState;
 
@@ -376,7 +378,9 @@ private:
     NavigationCompletedCallback navigationCompletedCallback_;
     bool lastNavigationSuperseded_ = false;
     UINT64 latestNavigationId_ = 0;  // 最近一次 NavigationStarting 的导航 ID
+#ifdef FBX_SANDBOXED
     std::unordered_set<UINT64> blockedNavigationIds_; // Cancelled before document lifecycle changes
+#endif
     NavigationStartingCallback navigationStartingCallback_;
     ProcessFailedCallback processFailedCallback_;
     EventRegistrationToken gotFocusToken_ = {};

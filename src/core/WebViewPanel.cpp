@@ -250,8 +250,8 @@ void WebViewPanel::OnWebViewReady() {
         HandleWebMessage(json);
     });
     
-    // Release must not allow a panel preference to override the host policy.
-#ifdef _DEBUG
+    // Only the release-tag sandbox overrides the panel preference.
+#ifndef FBX_SANDBOXED
     // 面板级 DevTools 初始化（全局 OR 面板级 → DevTools 可用）
     if (panelConfig_.enableDevTools && !security_config::IsDevToolsEnabled()) {
         if (auto* wv = webView_->GetWebView()) {
@@ -549,11 +549,11 @@ void WebViewPanel::ApplyConfig(const PanelConfig& oldCfg, const PanelConfig& new
             if (auto* wv = host->GetWebView()) {
                 wil::com_ptr<ICoreWebView2Settings> settings;
                 if (SUCCEEDED(wv->get_Settings(&settings)) && settings) {
-#ifdef _DEBUG
+#ifdef FBX_SANDBOXED
+                    settings->put_AreDevToolsEnabled(FALSE);
+#else
                     settings->put_AreDevToolsEnabled(
                         newCfg.enableDevTools || security_config::IsDevToolsEnabled());
-#else
-                    settings->put_AreDevToolsEnabled(FALSE);
 #endif
                 }
             }

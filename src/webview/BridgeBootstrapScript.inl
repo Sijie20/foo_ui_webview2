@@ -3,9 +3,17 @@
 // MSVC 限制单段字符串字面量的长度（C2026），)" LR"( 的分段位置不要改。
 #pragma once
 
-constexpr const wchar_t* kBridgeBootstrapScript = LR"(
+constexpr const wchar_t* kBridgeBootstrapScript =
+#ifdef FBX_SANDBOXED
+    LR"(window.__fbxHost = { sandboxed: true };)"
+#else
+    LR"(window.__fbxHost = { sandboxed: false };)"
+#endif
+    LR"(
         // foobar2000 WebView2 UI Bridge
-
+    )"
+#ifdef FBX_SANDBOXED
+    LR"(
         // AreHostObjectsAllowed(FALSE) is the native security boundary. Some
         // runtimes still publish an unused hostObjects proxy; remove that JS
         // entry point before theme or subframe code runs. Our bridge uses only
@@ -13,7 +21,9 @@ constexpr const wchar_t* kBridgeBootstrapScript = LR"(
         if (window.chrome && window.chrome.webview) {
             delete window.chrome.webview.hostObjects;
         }
-
+    )"
+#endif
+    LR"(
         // Drag-drop snapshot slot, declared before any page code runs so a
         // synchronous read never hits an undefined global. Runs once per
         // document, so a navigation cannot leave the previous page's paths

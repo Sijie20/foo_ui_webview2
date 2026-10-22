@@ -20,7 +20,7 @@ A page can call the host and receive its events only while the top-level page is
 
 Addresses are compared by scheme, host and port after parsing, never as text. A URL that carries a user name or password, such as `https://foo-ui-webview2.local:1@example.com/`, is a page on `example.com` and is not trusted. `file://` pages are never trusted.
 
-Top-level navigation outside this list is cancelled before leaving the current document. `about:blank` remains allowed for host-written pages. The Bridge independently rejects untrusted message sources with `ORIGIN_DENIED` and withholds events and asynchronous results.
+In the `FBX_SANDBOXED` release-tag variant, top-level navigation outside this list is cancelled before leaving the current document. Development builds retain the original navigation behavior. `about:blank` remains allowed for host-written pages. The Bridge independently rejects untrusted message sources with `ORIGIN_DENIED` and withholds events and asynchronous results.
 
 Real file paths in drag and drop go to fewer pages still: the virtual host above, and, while it is on, the development server at the address entered on the preferences page.
 
@@ -74,11 +74,13 @@ SSRF protections reject:
 
 ## DevTools
 
-Release builds always disable DevTools, regardless of the saved Developer preference. Debug builds retain the configuration channel (currently always enabled by `IsDevToolsEnabled`). Browser accelerator keys are disabled in both builds; Ctrl+P/O/N are still explicitly forwarded to foobar2000 Preferences / Open / New Playlist.
+Development branches do not impose the release-tag restrictions. Ordinary Release builds use the saved Developer preference and panel override for DevTools; Debug builds always enable it. Browser accelerators retain the original configuration-dependent behavior. File-drop new windows remain blocked; other new windows, downloads and navigation keep their original behavior.
 
-Host objects and default JavaScript dialogs are disabled. The Bridge uses web messages, and the built-in pages do not need `alert` / `confirm` / `prompt`. The SDK's SMP `utils.InputBox` native `prompt` fallback therefore behaves as cancelled (default value, or an exception when `errorOnCancel` is set); themes should use their own UI or the host dialog API.
+For a release tag, build with `build.ps1 -Config Release -Sandbox` (Release|x64). This defines `FBX_SANDBOXED=1`, writes `bin/Release_x64_sandbox/foo_ui_webview2.dll`, and forces DevTools and browser accelerators off. The ordinary development DLL remains at `bin/Release_x64/foo_ui_webview2.dll`. The bridge publishes `window.__fbxHost = { sandboxed: true/false }` according to the compiled variant.
 
-Pinch zoom and swipe navigation are disabled through Settings5 and Settings6 respectively. Every Chromium new-window request is handled without creating a browser window, including file drops; player-owned popup APIs remain separate. Every download is cancelled in `DownloadStarting` before default UI/file output. Blocked navigation and downloads are recorded in the foobar2000 console and the bounded, rotating profile log `webview_security.log`, without URLs or file paths.
+In the sandboxed variant, host objects and default JavaScript dialogs are disabled. The Bridge uses web messages, and the built-in pages do not need `alert` / `confirm` / `prompt`. The SDK's SMP `utils.InputBox` native `prompt` fallback therefore behaves as cancelled (default value, or an exception when `errorOnCancel` is set); themes should use their own UI or the host dialog API.
+
+In the sandboxed variant, pinch zoom and swipe navigation are disabled through Settings5 and Settings6 respectively. Every Chromium new-window request is handled without creating a browser window, including file drops; player-owned popup APIs remain separate. Every download is cancelled in `DownloadStarting` before default UI/file output. Blocked navigation and downloads are recorded in the foobar2000 console and the bounded, rotating profile log `webview_security.log`, without URLs or file paths.
 
 These controls do not disable the separately configured CDP port, page network requests, Bridge HTTP/shell/file APIs, editing shortcuts, or player drag-and-drop. CDP must remain disabled in production unless explicitly needed. This is not a network sandbox.
 

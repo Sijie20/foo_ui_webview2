@@ -21,26 +21,34 @@ void WebViewHost::SetupSettings() {
     
     // 基本设置
     settings->put_IsScriptEnabled(TRUE);
+#ifdef FBX_SANDBOXED
     settings->put_AreDefaultScriptDialogsEnabled(FALSE);
     // Bridge uses WebMessageReceived/PostWebMessageAsJson, never hostObjects.
     settings->put_AreHostObjectsAllowed(FALSE);
+#else
+    settings->put_AreDefaultScriptDialogsEnabled(TRUE);
+#endif
     settings->put_IsWebMessageEnabled(TRUE);
     settings->put_IsStatusBarEnabled(FALSE);
     settings->put_AreDefaultContextMenusEnabled(FALSE);  // 禁用默认右键菜单
     settings->put_IsZoomControlEnabled(FALSE);           // 禁用缩放
     
-    // Release must ignore the persisted developer preference.
-#ifdef _DEBUG
-    const bool enableDevTools = security_config::IsDevToolsEnabled();
-#else
+    // Only the release-tag sandbox ignores the persisted developer preference.
+#ifdef FBX_SANDBOXED
     constexpr bool enableDevTools = false;
+#else
+    const bool enableDevTools = security_config::IsDevToolsEnabled();
 #endif
     settings->put_AreDevToolsEnabled(enableDevTools ? TRUE : FALSE);
-    LOG(enableDevTools ? "DevTools ENABLED (debug config)" : "DevTools DISABLED (security policy)");
+    LOG(enableDevTools ? "DevTools ENABLED (config/debug)" : "DevTools DISABLED (config/sandbox)");
     
     // 更多设置 (需要更高版本接口)
     if (wil::com_ptr<ICoreWebView2Settings3> settings3;
-        SUCCEEDED(settings->QueryInterface(IID_PPV_ARGS(&settings3)))) {
+        SUCCEEDED(settings->QueryInterface(IID_PPV_ARGS(&settings3)))
+#ifndef FBX_SANDBOXED
+        && !enableDevTools
+#endif
+        ) {
         settings3->put_AreBrowserAcceleratorKeysEnabled(FALSE);  // 禁用 F5/Ctrl+R/F12 等
     }
 
@@ -57,6 +65,7 @@ void WebViewHost::SetupSettings() {
         settings4->put_IsGeneralAutofillEnabled(FALSE);
     }
 
+#ifdef FBX_SANDBOXED
     if (wil::com_ptr<ICoreWebView2Settings5> settings5;
         SUCCEEDED(settings->QueryInterface(IID_PPV_ARGS(&settings5)))) {
         settings5->put_IsPinchZoomEnabled(FALSE);
@@ -66,6 +75,7 @@ void WebViewHost::SetupSettings() {
         SUCCEEDED(settings->QueryInterface(IID_PPV_ARGS(&settings6)))) {
         settings6->put_IsSwipeNavigationEnabled(FALSE);
     }
+#endif
 
     // Settings8: 关闭 SmartScreen 信誉检查 — 导航面受控（fb2k://、虚拟主机、
     // dev server），所有 WebView 均为 FALSE 时 SmartScreen 组件进程不再启动。

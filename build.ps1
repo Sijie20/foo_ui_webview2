@@ -15,7 +15,8 @@ param(
     [string]$PlatformToolset,
     
     [switch]$Clean,
-    [switch]$Rebuild
+    [switch]$Rebuild,
+    [switch]$Sandbox
 )
 
 # ============================================================================
@@ -178,6 +179,7 @@ if ($Clean -or $Rebuild) {
     Write-Host "`n🧹 Cleaning solution..." -ForegroundColor Yellow
     $cleanArgs = @($sln, "/t:Clean", "/p:Configuration=$Config", "/p:Platform=$Platform", "/v:minimal")
     if ($PlatformToolset) { $cleanArgs += "/p:PlatformToolset=$PlatformToolset" }
+    if ($Sandbox) { $cleanArgs += "/p:FBXSandbox=1" }
     & $msbuild @cleanArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Host "❌ Clean failed!" -ForegroundColor Red
@@ -209,6 +211,8 @@ if ($PlatformToolset) {
     Write-Host "⚙️ Overriding PlatformToolset: $PlatformToolset" -ForegroundColor Yellow
 }
 
+if ($Sandbox) { $buildArgs += "/p:FBXSandbox=1" }
+
 Write-Host "Command: $msbuild $($buildArgs -join ' ')" -ForegroundColor Gray
 
 & $msbuild @buildArgs
@@ -218,6 +222,9 @@ if ($LASTEXITCODE -eq 0) {
     
     # 显示输出文件
     $outDir = Join-Path $PSScriptRoot "bin\${Config}_${Platform}"
+    if ($Sandbox -and $Config -eq 'Release' -and $Platform -eq 'x64') {
+        $outDir = Join-Path $PSScriptRoot 'bin\Release_x64_sandbox'
+    }
     if (Test-Path $outDir) {
         Write-Host "`n📦 Output files:" -ForegroundColor Cyan
         Get-ChildItem $outDir -Filter "*.dll" | ForEach-Object {

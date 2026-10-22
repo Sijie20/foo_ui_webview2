@@ -258,14 +258,14 @@ void WebViewHost::SetBoundsVisible(bool visible) {
 }
 
 void WebViewHost::OpenDevTools() {
-#ifdef _DEBUG
+#ifndef FBX_SANDBOXED
     if (webview_) {
         webview_->OpenDevToolsWindow();
     }
 #else
     // AreDevToolsEnabled does not gate this native API. Cover menus, F12 and
     // the development-server auto-open path here as well.
-    LOG("[security] DevTools blocked in Release");
+    LOG("[security] DevTools blocked in sandboxed build");
 #endif
 }
 

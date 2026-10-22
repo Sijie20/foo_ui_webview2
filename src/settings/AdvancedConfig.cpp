@@ -200,10 +200,12 @@ namespace security_config {
     }
 
     bool IsDevToolsEnabled() {
-        #ifndef NDEBUG
+        #ifdef FBX_SANDBOXED
+            return false;  // Release-tag sandbox overrides persisted settings
+        #elif !defined(NDEBUG)
             return true;  // Debug: DevTools always available for development
         #else
-            return false;  // Release production policy overrides persisted settings
+            return GetDevToolsSetting();
         #endif
     }
     

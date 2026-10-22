@@ -20,7 +20,7 @@
 
 地址先解析成协议、主机和端口再比较，从不按文本比较。带用户名或密码的地址（例如 `https://foo-ui-webview2.local:1@example.com/`）实际是 `example.com` 上的页面，不受信任。`file://` 页面一律不受信任。
 
-不在上述范围内的顶层导航会在离开当前文档前取消。宿主内联页面使用的 `about:blank` 仍放行。Bridge 还会独立以 `ORIGIN_DENIED` 拒绝不可信消息来源，并阻止向其投递事件和异步结果。
+只有 `FBX_SANDBOXED` 发行 tag 变体会在离开当前文档前取消不在上述范围内的顶层导航；开发构建保留原导航行为。宿主内联页面使用的 `about:blank` 仍放行。Bridge 还会独立以 `ORIGIN_DENIED` 拒绝不可信消息来源，并阻止向其投递事件和异步结果。
 
 拖放里的真实文件路径只给更少的页面：上面的虚拟主机，以及开发服务器开着时、偏好设置页里填写的那个开发服务器地址。
 
@@ -74,11 +74,13 @@ SSRF 防护拒绝：
 
 ## DevTools
 
-Release 构建始终禁用 DevTools，忽略已保存的开发者设置。Debug 构建保留配置通道（当前 `IsDevToolsEnabled` 恒为真）。两种构建均禁用浏览器快捷键；Ctrl+P/O/N 仍由组件显式转发为 foobar2000 偏好设置／打开文件／新建播放列表。
+开发分支不设发行沙箱限制：普通 Release 的 DevTools 由开发者配置与面板配置控制，Debug 恒开。浏览器快捷键恢复原有按 DevTools 配置控制的行为。文件拖入触发的新窗口仍按原逻辑拦截，其他新窗口、下载、导航保持原行为。
 
-禁用 hostObjects 和默认 JavaScript 对话框。Bridge 使用 WebMessage，组件内置页面不依赖 `alert` / `confirm` / `prompt`。SDK 的 SMP `utils.InputBox` 原生 `prompt` 回退会因此按取消处理（返回默认值，或在 `errorOnCancel` 开启时抛异常）；主题应使用自有界面或宿主对话框 API。
+发行 tag 使用 `build.ps1 -Config Release -Sandbox`（Release|x64），定义 `FBX_SANDBOXED=1`，输出 `bin/Release_x64_sandbox/foo_ui_webview2.dll`，强制关闭 DevTools 与浏览器快捷键。普通开发 DLL 输出到 `bin/Release_x64/foo_ui_webview2.dll`。Bridge 按编译变体注入 `window.__fbxHost = { sandboxed: true/false }`。
 
-通过 Settings5 和 Settings6 分别禁用双指缩放与滑动导航。所有 Chromium 新窗口请求（含文件拖入）均直接处理，不创建浏览器窗口；播放器自有 popup API 是独立通道。所有下载均在 `DownloadStarting` 中取消，不显示默认下载界面或输出文件。导航、下载拦截写入 foobar2000 控制台及配置目录下有限大小、轮转的 `webview_security.log`，不记录 URL 或文件路径。
+沙箱变体禁用 hostObjects 和默认 JavaScript 对话框。Bridge 使用 WebMessage，组件内置页面不依赖 `alert` / `confirm` / `prompt`。SDK 的 SMP `utils.InputBox` 原生 `prompt` 回退会因此按取消处理（返回默认值，或在 `errorOnCancel` 开启时抛异常）；主题应使用自有界面或宿主对话框 API。
+
+沙箱变体通过 Settings5 和 Settings6 分别禁用双指缩放与滑动导航。所有 Chromium 新窗口请求（含文件拖入）均直接处理，不创建浏览器窗口；播放器自有 popup API 是独立通道。所有下载均在 `DownloadStarting` 中取消，不显示默认下载界面或输出文件。导航、下载拦截写入 foobar2000 控制台及配置目录下有限大小、轮转的 `webview_security.log`，不记录 URL 或文件路径。
 
 这些措施不关闭独立配置的 CDP 端口、页面网络请求、Bridge HTTP／shell／文件 API、编辑快捷键或播放器拖放。生产环境应保持 CDP 关闭，除非明确需要。这不是网络沙箱。
 

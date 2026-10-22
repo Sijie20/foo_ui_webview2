@@ -70,6 +70,7 @@ void WebViewHost::RegisterMessageHandler() {
     const HRESULT navigationStartingHr = webview_->add_NavigationStarting(
         Callback<ICoreWebView2NavigationStartingEventHandler>(
             [this](ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
+#ifdef FBX_SANDBOXED
                 if (!args) return E_POINTER;
                 wil::unique_cotaskmem_string uri;
                 if (FAILED(args->get_Uri(&uri)) || !uri || !IsTrustedOrigin(uri.get())) {
@@ -83,6 +84,7 @@ void WebViewHost::RegisterMessageHandler() {
                     }
                     return S_OK;
                 }
+#endif
                 if (UINT64 id = 0; args && SUCCEEDED(args->get_NavigationId(&id))) {
                     latestNavigationId_ = id;
                 }
@@ -115,9 +117,11 @@ void WebViewHost::RegisterMessageHandler() {
             [this](ICoreWebView2* /*sender*/, ICoreWebView2NavigationCompletedEventArgs* args) {
                 UINT64 completedId = 0;
                 args->get_NavigationId(&completedId);
+#ifdef FBX_SANDBOXED
                 // A blocked navigation kept the old document alive. Do not run
                 // completion/fallback callbacks or touch that document's state.
                 if (blockedNavigationIds_.erase(completedId) != 0) return S_OK;
+#endif
                 artworkLifecycle_.OnNavigationCompleted();
                 BOOL success;
                 args->get_IsSuccess(&success);
@@ -146,7 +150,8 @@ void WebViewHost::RegisterMessageHandler() {
         artwork_request::TokenKind::NavigationCompleted,
         SUCCEEDED(navigationCompletedHr));
 
-    // Block every Chromium popup, including unhandled file drops. Player-owned
+    // Sandbox blocks every Chromium popup; development keeps the file-drop guard.
+    // Player-owned
     // popup APIs create their own WebViewHost and do not use NewWindowRequested.
     // No this capture: these handlers live only as long as webview_.
     {
@@ -158,15 +163,25 @@ void WebViewHost::RegisterMessageHandler() {
                     if (!args) {
                         return S_OK;
                     }
+#ifdef FBX_SANDBOXED
                     args->put_Handled(TRUE);
+#endif
                     wil::unique_cotaskmem_string uri;
                     const bool isFile = SUCCEEDED(args->get_Uri(&uri)) && uri &&
                                         _wcsnicmp(uri.get(), L"file:", 5) == 0;
                     if (fb2k_dnd::DndTraceEnabled()) {
+#ifdef FBX_SANDBOXED
                         TraceNavigationRequest(isFile ? "newWindow.blocked" : "newWindow.blocked.external",
+#else
+                        TraceNavigationRequest(isFile ? "newWindow.blocked" : "newWindow.requested",
+#endif
                                                host, args);
                     }
+#ifdef FBX_SANDBOXED
                     LOG("[security] new window blocked");
+#else
+                    if (isFile) args->put_Handled(TRUE);
+#endif
                     return S_OK;
                 }
             ).Get(),
@@ -174,6 +189,7 @@ void WebViewHost::RegisterMessageHandler() {
         );
     }
 
+#ifdef FBX_SANDBOXED
     // DownloadStarting was introduced in ICoreWebView2_4. Cancel before any
     // default download UI or file write; log no URI or suggested file path.
     wil::com_ptr<ICoreWebView2_4> webview4;
@@ -194,6 +210,7 @@ void WebViewHost::RegisterMessageHandler() {
     } else {
         LOG("[security] ICoreWebView2_4 unavailable: download blocking unavailable");
     }
+#endif
     
     LOG("Message handlers registered");
 }
