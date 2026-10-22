@@ -203,7 +203,7 @@ namespace security_config {
         #ifndef NDEBUG
             return true;  // Debug: DevTools always available for development
         #else
-            return GetDevToolsSetting();
+            return false;  // Release production policy overrides persisted settings
         #endif
     }
     

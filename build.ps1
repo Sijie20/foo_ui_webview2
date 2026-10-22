@@ -57,6 +57,18 @@ if (-not $msbuild) {
 Write-Host "✓ Found MSBuild: $msbuild" -ForegroundColor Green
 Write-Host "✓ Found VS at: $vsPath" -ForegroundColor Green
 
+# The checkout defaults to v145; VS 2022 installations may only have v143.
+# Keep explicit overrides authoritative and use installed tools without downloads.
+if (-not $PlatformToolset) {
+    $vcTargetsRoot = Join-Path $vsPath 'MSBuild\Microsoft\VC'
+    $v145Targets = @(Get-ChildItem "$vcTargetsRoot\v*\Platforms\$Platform\PlatformToolsets\v145\Toolset.props" -ErrorAction SilentlyContinue)
+    $v143Targets = @(Get-ChildItem "$vcTargetsRoot\v*\Platforms\$Platform\PlatformToolsets\v143\Toolset.props" -ErrorAction SilentlyContinue)
+    if ($v145Targets.Count -eq 0 -and $v143Targets.Count -gt 0) {
+        $PlatformToolset = 'v143'
+        Write-Host '⚙️ v145 is not installed; using installed v143 toolset.' -ForegroundColor Yellow
+    }
+}
+
 # ============================================================================
 # 2. 验证项目文件
 # ============================================================================

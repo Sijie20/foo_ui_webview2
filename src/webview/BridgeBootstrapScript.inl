@@ -6,6 +6,14 @@
 constexpr const wchar_t* kBridgeBootstrapScript = LR"(
         // foobar2000 WebView2 UI Bridge
 
+        // AreHostObjectsAllowed(FALSE) is the native security boundary. Some
+        // runtimes still publish an unused hostObjects proxy; remove that JS
+        // entry point before theme or subframe code runs. Our bridge uses only
+        // web messages and does not need the proxy.
+        if (window.chrome && window.chrome.webview) {
+            delete window.chrome.webview.hostObjects;
+        }
+
         // Drag-drop snapshot slot, declared before any page code runs so a
         // synchronous read never hits an undefined global. Runs once per
         // document, so a navigation cannot leave the previous page's paths

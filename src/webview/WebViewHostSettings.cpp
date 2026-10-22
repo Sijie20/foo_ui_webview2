@@ -21,21 +21,26 @@ void WebViewHost::SetupSettings() {
     
     // 基本设置
     settings->put_IsScriptEnabled(TRUE);
-    settings->put_AreDefaultScriptDialogsEnabled(TRUE);
+    settings->put_AreDefaultScriptDialogsEnabled(FALSE);
+    // Bridge uses WebMessageReceived/PostWebMessageAsJson, never hostObjects.
+    settings->put_AreHostObjectsAllowed(FALSE);
     settings->put_IsWebMessageEnabled(TRUE);
     settings->put_IsStatusBarEnabled(FALSE);
     settings->put_AreDefaultContextMenusEnabled(FALSE);  // 禁用默认右键菜单
     settings->put_IsZoomControlEnabled(FALSE);           // 禁用缩放
     
-    // 安全: 基于高级设置的 DevTools 控制
-    bool enableDevTools = security_config::IsDevToolsEnabled();
+    // Release must ignore the persisted developer preference.
+#ifdef _DEBUG
+    const bool enableDevTools = security_config::IsDevToolsEnabled();
+#else
+    constexpr bool enableDevTools = false;
+#endif
     settings->put_AreDevToolsEnabled(enableDevTools ? TRUE : FALSE);
-    LOG(enableDevTools ? "DevTools ENABLED (config/debug)" : "DevTools DISABLED (default)");
+    LOG(enableDevTools ? "DevTools ENABLED (debug config)" : "DevTools DISABLED (security policy)");
     
     // 更多设置 (需要更高版本接口)
     if (wil::com_ptr<ICoreWebView2Settings3> settings3;
-        SUCCEEDED(settings->QueryInterface(IID_PPV_ARGS(&settings3))) && !enableDevTools) {
-        // 仅在禁用 DevTools 时禁用快捷键
+        SUCCEEDED(settings->QueryInterface(IID_PPV_ARGS(&settings3)))) {
         settings3->put_AreBrowserAcceleratorKeysEnabled(FALSE);  // 禁用 F5/Ctrl+R/F12 等
     }
 
@@ -50,6 +55,16 @@ void WebViewHost::SetupSettings() {
     if (SUCCEEDED(settings->QueryInterface(IID_PPV_ARGS(&settings4)))) {
         settings4->put_IsPasswordAutosaveEnabled(FALSE);
         settings4->put_IsGeneralAutofillEnabled(FALSE);
+    }
+
+    if (wil::com_ptr<ICoreWebView2Settings5> settings5;
+        SUCCEEDED(settings->QueryInterface(IID_PPV_ARGS(&settings5)))) {
+        settings5->put_IsPinchZoomEnabled(FALSE);
+    }
+    // Swipe navigation belongs to Settings6 (not Settings4) in the WebView2 SDK.
+    if (wil::com_ptr<ICoreWebView2Settings6> settings6;
+        SUCCEEDED(settings->QueryInterface(IID_PPV_ARGS(&settings6)))) {
+        settings6->put_IsSwipeNavigationEnabled(FALSE);
     }
 
     // Settings8: 关闭 SmartScreen 信誉检查 — 导航面受控（fb2k://、虚拟主机、

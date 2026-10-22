@@ -6,6 +6,7 @@
 #include "webview/ArtworkWorkerQueue.h"
 #include <dcomp.h>
 #include <atomic>
+#include <unordered_set>
 
 struct MediaRouteState;
 
@@ -375,6 +376,7 @@ private:
     NavigationCompletedCallback navigationCompletedCallback_;
     bool lastNavigationSuperseded_ = false;
     UINT64 latestNavigationId_ = 0;  // 最近一次 NavigationStarting 的导航 ID
+    std::unordered_set<UINT64> blockedNavigationIds_; // Cancelled before document lifecycle changes
     NavigationStartingCallback navigationStartingCallback_;
     ProcessFailedCallback processFailedCallback_;
     EventRegistrationToken gotFocusToken_ = {};

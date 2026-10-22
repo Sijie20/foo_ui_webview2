@@ -250,6 +250,8 @@ void WebViewPanel::OnWebViewReady() {
         HandleWebMessage(json);
     });
     
+    // Release must not allow a panel preference to override the host policy.
+#ifdef _DEBUG
     // 面板级 DevTools 初始化（全局 OR 面板级 → DevTools 可用）
     if (panelConfig_.enableDevTools && !security_config::IsDevToolsEnabled()) {
         if (auto* wv = webView_->GetWebView()) {
@@ -260,6 +262,7 @@ void WebViewPanel::OnWebViewReady() {
             }
         }
     }
+#endif
 
     // Load frontend page
     LoadFrontendPage();
@@ -546,8 +549,12 @@ void WebViewPanel::ApplyConfig(const PanelConfig& oldCfg, const PanelConfig& new
             if (auto* wv = host->GetWebView()) {
                 wil::com_ptr<ICoreWebView2Settings> settings;
                 if (SUCCEEDED(wv->get_Settings(&settings)) && settings) {
+#ifdef _DEBUG
                     settings->put_AreDevToolsEnabled(
                         newCfg.enableDevTools || security_config::IsDevToolsEnabled());
+#else
+                    settings->put_AreDevToolsEnabled(FALSE);
+#endif
                 }
             }
         }

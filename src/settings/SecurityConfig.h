@@ -6,7 +6,8 @@
 // 这些函数在 settings/AdvancedConfig.cpp 中定义，用于访问安全配置
 
 namespace security_config {
-    // DevTools 开关。IsDevToolsEnabled 在 Debug 构建恒为真；GetDevToolsSetting 是存储值，供偏好页显示与写回比对。
+    // DevTools 配置通道仅供 Debug 使用（IsDevToolsEnabled 恒为真）；Release 恒为假，
+    // WebViewHost、面板覆盖与原生打开入口均强制禁用。GetDevToolsSetting 是存储值，供偏好页显示与写回比对。
     // Developer 子页 Apply 时写入；新建 controller 时读取，改动后重启生效。首次读取时从旧 Advanced 键迁移。
     bool IsDevToolsEnabled();
     bool GetDevToolsSetting();

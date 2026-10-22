@@ -1,7 +1,7 @@
 ﻿/**
  * WebViewHostMessaging.cpp - WebViewHost 的页面消息与导航
  *
- * 注册 WebMessageReceived、NavigationStarting/Completed 与 NewWindowRequested，移除 artwork
+ * 注册 WebMessageReceived、NavigationStarting/Completed、NewWindowRequested 与 DownloadStarting，移除 artwork
  * 生命周期记账的三个事件，以及 Navigate、ExecuteScript、PostMessage 等对页面的调用。
  */
 #include "pch.h"
@@ -66,10 +66,23 @@ void WebViewHost::RegisterMessageHandler() {
         &webMessageReceivedToken_
     );
     
-    // 导航完成事件
+    // Reject before mutating the current document's artwork/media generation.
     const HRESULT navigationStartingHr = webview_->add_NavigationStarting(
         Callback<ICoreWebView2NavigationStartingEventHandler>(
             [this](ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
+                if (!args) return E_POINTER;
+                wil::unique_cotaskmem_string uri;
+                if (FAILED(args->get_Uri(&uri)) || !uri || !IsTrustedOrigin(uri.get())) {
+                    args->put_Cancel(TRUE);
+                    UINT64 id = 0;
+                    if (SUCCEEDED(args->get_NavigationId(&id))) blockedNavigationIds_.insert(id);
+                    LOG("[security] navigation blocked");
+                    WriteProfileLog(L"webview_security.log", "[security] navigation blocked");
+                    if (fb2k_dnd::DndTraceEnabled()) {
+                        TraceNavigationRequest("nav.blocked", parentHwnd_, args);
+                    }
+                    return S_OK;
+                }
                 if (UINT64 id = 0; args && SUCCEEDED(args->get_NavigationId(&id))) {
                     latestNavigationId_ = id;
                 }
@@ -100,14 +113,17 @@ void WebViewHost::RegisterMessageHandler() {
     const HRESULT navigationCompletedHr = webview_->add_NavigationCompleted(
         Callback<ICoreWebView2NavigationCompletedEventHandler>(
             [this](ICoreWebView2* /*sender*/, ICoreWebView2NavigationCompletedEventArgs* args) {
+                UINT64 completedId = 0;
+                args->get_NavigationId(&completedId);
+                // A blocked navigation kept the old document alive. Do not run
+                // completion/fallback callbacks or touch that document's state.
+                if (blockedNavigationIds_.erase(completedId) != 0) return S_OK;
                 artworkLifecycle_.OnNavigationCompleted();
                 BOOL success;
                 args->get_IsSuccess(&success);
                 
                 // 被顶掉的导航报的错误码与连不上的取值重叠，所以按导航 ID 判：
                 // 失败的这次已不是最近开始的那次，就是被后来的导航取消的。
-                UINT64 completedId = 0;
-                args->get_NavigationId(&completedId);
                 lastNavigationSuperseded_ = !success && completedId != latestNavigationId_;
                 if (success) {
                     LOG("Navigation completed successfully");
@@ -130,11 +146,9 @@ void WebViewHost::RegisterMessageHandler() {
         artwork_request::TokenKind::NavigationCompleted,
         SUCCEEDED(navigationCompletedHr));
 
-    // 页面没有接住的文件放下，WebView2 的默认做法是为那个文件发 NewWindowRequested，
-    // 不处理就自己开一个窗口显示它（音频文件是 Chromium 自带的媒体页）。那个窗口不归
-    // 宿主管，也不是页面要的，所以 file: 地址的新窗口一律拦下；拖进来的文件照常经
-    // dnd:drop 与页面自己的 drop 处理。其他地址保持默认行为。处理函数不捕获 this，
-    // 随 webview_ 释放。
+    // Block every Chromium popup, including unhandled file drops. Player-owned
+    // popup APIs create their own WebViewHost and do not use NewWindowRequested.
+    // No this capture: these handlers live only as long as webview_.
     {
         const HWND host = parentHwnd_;
         EventRegistrationToken newWindowToken{};
@@ -144,21 +158,41 @@ void WebViewHost::RegisterMessageHandler() {
                     if (!args) {
                         return S_OK;
                     }
+                    args->put_Handled(TRUE);
                     wil::unique_cotaskmem_string uri;
                     const bool isFile = SUCCEEDED(args->get_Uri(&uri)) && uri &&
                                         _wcsnicmp(uri.get(), L"file:", 5) == 0;
                     if (fb2k_dnd::DndTraceEnabled()) {
-                        TraceNavigationRequest(isFile ? "newWindow.blocked" : "newWindow.requested",
+                        TraceNavigationRequest(isFile ? "newWindow.blocked" : "newWindow.blocked.external",
                                                host, args);
                     }
-                    if (isFile) {
-                        args->put_Handled(TRUE);
-                    }
+                    LOG("[security] new window blocked");
                     return S_OK;
                 }
             ).Get(),
             &newWindowToken
         );
+    }
+
+    // DownloadStarting was introduced in ICoreWebView2_4. Cancel before any
+    // default download UI or file write; log no URI or suggested file path.
+    wil::com_ptr<ICoreWebView2_4> webview4;
+    if (SUCCEEDED(webview_->QueryInterface(IID_PPV_ARGS(&webview4)))) {
+        EventRegistrationToken downloadToken{};
+        const HRESULT hr = webview4->add_DownloadStarting(
+            Callback<ICoreWebView2DownloadStartingEventHandler>(
+                [](ICoreWebView2*, ICoreWebView2DownloadStartingEventArgs* args) -> HRESULT {
+                    if (!args) return E_POINTER;
+                    const HRESULT cancelHr = args->put_Cancel(TRUE);
+                    args->put_Handled(TRUE);
+                    LOG("[security] download blocked");
+                    WriteProfileLog(L"webview_security.log", "[security] download blocked");
+                    return cancelHr;
+                }
+            ).Get(), &downloadToken);
+        if (FAILED(hr)) LOG("[security] DownloadStarting registration failed");
+    } else {
+        LOG("[security] ICoreWebView2_4 unavailable: download blocking unavailable");
     }
     
     LOG("Message handlers registered");
