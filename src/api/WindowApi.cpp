@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <limits>
 #include <optional>
+#include <wil/resource.h>
 
 // DWM wrappers
 static HRESULT S_DwmSetWindowAttribute(HWND h, DWORD a, LPCVOID d, DWORD s) {
@@ -1017,6 +1018,12 @@ api::Result<wn::GetBoundsResult> WindowGetBounds(const wn::GetBoundsParams&, con
     HWND hwnd = CallerTopLevelHwnd(caller);
     if (!hwnd) return result;
 
+    // Read true desktop/client pixels even if a bridge caller runs under a
+    // virtualized DPI context. No DIP conversion or extra dpi/96 multiplication.
+    const auto previousDpiContext = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    const auto restoreDpiContext = wil::scope_exit([previousDpiContext] {
+        if (previousDpiContext) SetThreadDpiAwarenessContext(previousDpiContext);
+    });
     RECT rc{};
     GetWindowRect(hwnd, &rc);
     result.x = rc.left;

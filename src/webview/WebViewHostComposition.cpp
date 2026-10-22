@@ -50,6 +50,8 @@ void WebViewHost::RefreshForDwmEffect() {
     if (!controller_ || !parentHwnd_) return;
     
     // 方法 1: 触发 WebView 边界重设来刷新合成器
+    // DComp SetClip consumes physical visual pixels in both controller bounds
+    // modes. Keep this identical to Resize; DPI conversion belongs to Bounds only.
     const RECT physicalClip = physicalBounds_;
     {
         // 微调边界强制刷新

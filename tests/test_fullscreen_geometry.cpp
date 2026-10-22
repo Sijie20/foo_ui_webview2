@@ -58,6 +58,32 @@ TEST(FullscreenGeometry, ZeroBoundsRemainHiddenAtEveryDpi) {
         ExpectRect(fullscreen_geometry::ControllerBoundsFromPhysical({0,0,0,0},dpi),{0,0,0,0});
 }
 
+TEST(FullscreenGeometry, LiveRawMatrixUsesPhysicalPixelsAt150Percent) {
+    // Runtime evidence: CSS widths are 854, 569, 1280 respectively at dpr=1.5.
+    for (const int width : {1280,853,1920}) {
+        const Rect physical{0,0,width,720};
+        ExpectRect(fullscreen_geometry::ControllerBoundsFromPhysical(physical,144),physical);
+    }
+}
+
+TEST(FullscreenGeometry, LogicalBoundsConvertOnceWhileRawBoundsStayPhysical) {
+    using fullscreen_geometry::BoundsMode;
+    const Rect physical{0,0,1280,720};
+    ExpectRect(fullscreen_geometry::ControllerBoundsFromPhysical(physical,144,BoundsMode::RasterizationScale),{0,0,853,480});
+    ExpectRect(fullscreen_geometry::ControllerBoundsFromPhysical({0,0,1920,1080},144,BoundsMode::RasterizationScale),{0,0,1280,720});
+    ExpectRect(fullscreen_geometry::ControllerBoundsFromPhysical(physical,96,BoundsMode::RasterizationScale),physical);
+    ExpectRect(fullscreen_geometry::ControllerBoundsFromPhysical(physical,144,BoundsMode::RawPixels),physical);
+}
+
+TEST(FullscreenGeometry, LogicalBoundsRoundSignedOffsetsAndKeepHiddenBounds) {
+    using fullscreen_geometry::BoundsMode;
+    ExpectRect(fullscreen_geometry::ControllerBoundsFromPhysical({-1280,-720,853,481},144,BoundsMode::RasterizationScale),{-853,-480,569,321});
+    ExpectRect(fullscreen_geometry::ControllerBoundsForScale({-3,-3,3,3},2,BoundsMode::RasterizationScale),{-2,-2,2,2});
+    for (const unsigned dpi : {0u,96u,120u,144u,192u})
+        ExpectRect(fullscreen_geometry::ControllerBoundsFromPhysical({0,0,0,0},dpi,BoundsMode::RasterizationScale),{0,0,0,0});
+    ExpectRect(fullscreen_geometry::ControllerBoundsFromPhysical({0,0,1280,720},0,BoundsMode::RasterizationScale),{0,0,1280,720});
+}
+
 TEST(FullscreenGeometry, NoMonitorQueryResultPreservesLastKnownRestoreGeometry) {
     ExpectRect(fullscreen_geometry::RecoverToVisibleArea({100,100,900,700},nullptr,0,true),{100,100,900,700});
 }

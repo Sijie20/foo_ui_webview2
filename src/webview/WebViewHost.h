@@ -312,6 +312,7 @@ public:
 private:
     void ApplyControllerBounds(const RECT& physicalBounds);
     RECT physicalBounds_{};
+    UINT boundsConfigurationDpi_ = 0;
     // controller 就绪时把偏好里的默认缩放（非 100% 时）应用到这个 WebView。
     void ApplyDefaultZoomPreference();
 

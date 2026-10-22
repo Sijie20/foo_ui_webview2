@@ -16,18 +16,54 @@ using namespace Microsoft::WRL;
 void WebViewHost::ApplyControllerBounds(const RECT& physicalBounds) {
     if (!controller_) return;
     const UINT dpi = parentHwnd_ ? GetDpiForWindow(parentHwnd_) : 96;
-    // Keep controller coordinates explicit even if a caller changed BoundsMode.
+    // One scale owner: WM_DPICHANGED / display recovery calls Resize for main,
+    // popup and panel hosts. Automatic detection must not race this explicit scale.
+    // RAW bounds and DComp clips are physical pixels; only a confirmed scaled-mode
+    // fallback converts controller bounds to DIPs.
+    double scale = (dpi ? dpi : 96) / 96.0;
+    COREWEBVIEW2_BOUNDS_MODE mode = COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS;
     wil::com_ptr<ICoreWebView2Controller3> controller3;
-    if (SUCCEEDED(controller_.try_query_to(&controller3))) {
-        controller3->put_BoundsMode(COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS);
-        controller3->put_ShouldDetectMonitorScaleChanges(TRUE);
-        controller3->put_RasterizationScale((dpi ? dpi : 96) / 96.0);
+    // wil::try_query_to returns bool, not HRESULT. Use the actual COM result.
+    const HRESULT qi = controller_->QueryInterface(IID_PPV_ARGS(&controller3));
+    HRESULT modeHr = qi, detectHr = qi, scaleHr = qi, getModeHr = qi, getScaleHr = qi;
+    bool configurationFailed = false;
+    if (SUCCEEDED(qi) && controller3) {
+        modeHr = controller3->put_BoundsMode(COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS);
+        detectHr = controller3->put_ShouldDetectMonitorScaleChanges(FALSE);
+        scaleHr = controller3->put_RasterizationScale(scale);
+        getModeHr = controller3->get_BoundsMode(&mode);
+        getScaleHr = controller3->get_RasterizationScale(&scale);
+        configurationFailed = FAILED(modeHr) || FAILED(detectHr) || FAILED(scaleHr) ||
+            FAILED(getModeHr) || FAILED(getScaleHr);
     }
-    const auto converted = fullscreen_geometry::ControllerBoundsFromPhysical(
-        {physicalBounds.left, physicalBounds.top, physicalBounds.right, physicalBounds.bottom}, dpi);
+    // Pre-Controller3 runtimes use the original raw-pixel Bounds contract. With
+    // Controller3, never feed physical pixels into an unknown logical mode.
+    const bool knownMode = !controller3 || (SUCCEEDED(getModeHr) &&
+        (mode == COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS ||
+         (mode == COREWEBVIEW2_BOUNDS_MODE_USE_RASTERIZATION_SCALE &&
+          SUCCEEDED(getScaleHr) && scale > 0 && std::isfinite(scale))));
+    if (!knownMode) configurationFailed = true;
+    if (boundsConfigurationDpi_ != dpi || configurationFailed) {
+        std::ostringstream detail;
+        detail << "dpi=" << dpi << " mode=" << mode << " scale=" << scale
+               << std::hex << " qi=0x" << static_cast<unsigned>(qi)
+               << " putMode=0x" << static_cast<unsigned>(modeHr)
+               << " putDetect=0x" << static_cast<unsigned>(detectHr)
+               << " putScale=0x" << static_cast<unsigned>(scaleHr)
+               << " getMode=0x" << static_cast<unsigned>(getModeHr)
+               << " getScale=0x" << static_cast<unsigned>(getScaleHr);
+        LogLifecycle(configurationFailed ? "bounds.configuration-failed" : "bounds.configuration", detail.str());
+        boundsConfigurationDpi_ = dpi;
+    }
+    if (!knownMode) return;
+    const auto converted = fullscreen_geometry::ControllerBoundsForScale(
+        {physicalBounds.left, physicalBounds.top, physicalBounds.right, physicalBounds.bottom}, scale,
+        mode == COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS ? fullscreen_geometry::BoundsMode::RawPixels
+                                                     : fullscreen_geometry::BoundsMode::RasterizationScale);
     const RECT controllerBounds{converted.left, converted.top, converted.right, converted.bottom};
     window_behavior_trace::Com(parentHwnd_, "controller.put_Bounds", controllerBounds);
-    controller_->put_Bounds(controllerBounds);
+    const HRESULT boundsHr = controller_->put_Bounds(controllerBounds);
+    if (FAILED(boundsHr)) LogLifecycle("bounds.apply-failed", "hr=" + std::to_string(static_cast<long>(boundsHr)));
     controller_->NotifyParentWindowPositionChanged();
 }
 
@@ -59,7 +95,8 @@ void WebViewHost::Resize(const RECT& bounds) {
         }
     }
     
-    // 同步 DirectComposition visual 裁剪矩形，防止合成层渲染溢出窗口边界
+    // DComp visual coordinates are physical pixels, matching RAW controller
+    // bounds. Never reuse the DIP fallback's converted controller rectangle here.
     if (dcompRootVisual_) {
         D2D1_RECT_F clipRect = {
             (float)bounds.left,

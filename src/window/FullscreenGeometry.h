@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <limits>
+#include <cmath>
 
 namespace fullscreen_geometry {
 struct Rect { int left, top, right, bottom; };
@@ -35,7 +36,19 @@ inline Rect RecoverToVisibleArea(Rect window, const Rect* areas, std::size_t cou
     return count ? ClampToWorkArea(window, areas[nearest]) : window;
 }
 
-// RAW_PIXELS is intentional: measured at 144 DPI, 900 physical px =>
-// innerWidth=600,dpr=1.5. Dividing the bounds again gives innerWidth=400.
-inline Rect ControllerBoundsFromPhysical(Rect physical, unsigned /*dpi*/) { return physical; }
+enum class BoundsMode { RawPixels, RasterizationScale };
+
+// Live composition matrix at 144 DPI, scale=1.5, zoom=1:
+// RAW 1280/853/1920 => innerWidth 854/569/1280; scaled mode => 1280/853/1920.
+// DComp clips always remain physical, even when controller bounds use DIPs.
+inline Rect ControllerBoundsForScale(Rect physical, double scale, BoundsMode mode) {
+    if (mode == BoundsMode::RawPixels) return physical;
+    if (!(scale > 0) || !std::isfinite(scale)) scale = 1;
+    const auto dip = [scale](int value) { return static_cast<int>(std::lround(value / scale)); };
+    return {dip(physical.left), dip(physical.top), dip(physical.right), dip(physical.bottom)};
+}
+inline Rect ControllerBoundsFromPhysical(Rect physical, unsigned dpi,
+                                        BoundsMode mode = BoundsMode::RawPixels) {
+    return ControllerBoundsForScale(physical, (dpi ? dpi : 96) / 96.0, mode);
+}
 } // namespace fullscreen_geometry
