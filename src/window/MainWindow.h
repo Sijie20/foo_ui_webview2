@@ -145,7 +145,8 @@ public:
     // ========== 期望置顶状态守护 ==========
 
     // 登记主窗口「应有」的 WS_EX_TOPMOST 状态，作为守护逻辑的参照真相。
-    // 仅允许两类显式用户意图路径改写：window.setAlwaysOnTop / window.toggleAlwaysOnTop
+    // 显式用户意图路径：window.setAlwaysOnTop / window.toggleAlwaysOnTop；
+    // 显示变更/紧急恢复另外强制清除此期望，确保窗口能退出 topmost。
     // （见 WindowApi.cpp）。全屏的临时 HWND_TOPMOST 不经此处——守护在全屏期间暂停。
     // WM_WINDOWPOSCHANGED 中发现实际位与期望不符即矫正（见 WndProc）。
     void SetExpectedTopmost(bool expected);
@@ -284,7 +285,7 @@ private:
     unsigned long long lastOverlayRedirectTick_ = 0;  // 最近一次 redirect 时间（用于超时清除）
 
     // 期望置顶状态（见 SetExpectedTopmost / WM_WINDOWPOSCHANGED 守护）。
-    // 默认 false：主窗口启动时从不置顶；之后仅随用户显式 alwaysOnTop 意图变化。
+    // 默认 false；随用户显式 alwaysOnTop 意图变化，显示变更/紧急恢复时清零。
     bool expectedTopmost_ = false;
 
     // ========== 主窗口 chrome 相位 ==========

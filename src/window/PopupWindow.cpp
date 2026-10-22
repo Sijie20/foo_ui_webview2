@@ -1,4 +1,5 @@
 ﻿#include "pch.h"
+#include "window/DisplayDiagnostics.h"
 #include "window/PopupWindow.h"
 #include "window/MenuOverlayHost.h"
 #include "window/WindowBehaviorTrace.h"
@@ -957,6 +958,7 @@ LRESULT PopupWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_DPICHANGED: {
+            const bool recovering = display_diagnostics::OnEnvironmentChange(hwnd_, this, msg, wParam, lParam);
             // 跨显示器移动或系统缩放变更。约束以 DIP 存储，故其**物理**取值
             // 随 DPI 变化，但系统不会追认已存在窗口的尺寸——WM_GETMINMAXINFO
             // 只约束后续的拖拽/程序化改尺寸。需主动校正（Q9-c）。
@@ -965,7 +967,7 @@ LRESULT PopupWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             // 再按新 DPI 下的物理约束校正。
             // SWP_NOACTIVATE：overlay popup（WS_EX_NOACTIVATE / clickThrough）
             // 绝不能因 DPI 变更而被激活。
-            if (auto* suggested = reinterpret_cast<RECT*>(lParam)) {
+            if (auto* suggested = reinterpret_cast<RECT*>(lParam); suggested && !recovering) {
                 SetWindowPos(hwnd_, nullptr,
                     suggested->left, suggested->top,
                     suggested->right - suggested->left,
@@ -973,8 +975,10 @@ LRESULT PopupWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                     SWP_NOZORDER | SWP_NOACTIVATE);
             }
 
-            if (IsFullscreen()) ReflowFullscreenWindow(hwnd_);
-            else RevalidateSizeAgainstConstraints();
+            if (!recovering) {
+                if (IsFullscreen()) ReflowFullscreenWindow(hwnd_);
+                else RevalidateSizeAgainstConstraints();
+            }
 
             // 客户区尺寸已变，重算 WebView 边界。
             RECT clientRect{};
@@ -985,12 +989,17 @@ LRESULT PopupWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         case WM_DISPLAYCHANGE:
         case WM_SETTINGCHANGE: {
-            ReflowFullscreenWindow(hwnd_);
+            if (!display_diagnostics::OnEnvironmentChange(hwnd_, this, msg, wParam, lParam))
+                ReflowFullscreenWindow(hwnd_);
             RECT physicalClient{};
             if (!isMinimized_ && GetClientRect(hwnd_, &physicalClient))
                 OnSize(physicalClient.right, physicalClient.bottom);
             break;
         }
+
+        case display_diagnostics::kDeferredRecoveryMessage:
+            display_diagnostics::OnDeferredRecovery(hwnd_, wParam);
+            return 0;
 
         case WM_TIMER:
             if (wParam == CLOSE_TIMER_ID) {

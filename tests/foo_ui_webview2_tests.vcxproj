@@ -198,6 +198,7 @@
     <ClCompile Include="test_webview_crash_policy.cpp" />
     <ClCompile Include="test_window_geometry_math.cpp" />
     <ClCompile Include="test_fullscreen_geometry.cpp" />
+    <ClCompile Include="test_display_recovery.cpp" />
     <ClCompile Include="test_maximize_button_region.cpp" />
     <ClCompile Include="test_window_target_policy.cpp" />
     <ClCompile Include="test_window_caller_identity.cpp" />

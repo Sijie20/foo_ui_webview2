@@ -18,6 +18,8 @@
 #include "window/WindowShellBase.h"
 #include "window/WindowGeometryMath.h"
 #include "window/FullscreenGeometry.h"
+#include "window/DisplayRecoveryPolicy.h"
+#include "window/DisplayDiagnostics.h"
 #include "webview/WebViewHost.h"
 #include "settings/SecurityConfig.h"
 #include "settings/WindowStateConfig.h"
@@ -298,10 +300,16 @@ private:
     bool was_visible_;
 };
 
-static void EnterFullscreenMode(HWND hwnd, WindowShellBase* shell) {
+static void EnterFullscreenMode(HWND hwnd, WindowShellBase* shell, const char* source) {
     if (!shell || shell->IsFullscreen()) return;
+    display_diagnostics::Record(hwnd, shell, "fullscreen-enter-begin", source);
+    display_recovery::UpdatingGuard updating(shell->fullscreenGeometryUpdating_);
+    // Borderless window only: never change display mode, refresh rate or HDR.
     MONITORINFO monitor_info{};
-    if (!CurrentMonitorInfo(hwnd, monitor_info)) return;
+    if (!CurrentMonitorInfo(hwnd, monitor_info)) {
+        display_diagnostics::Record(hwnd, shell, "fullscreen-enter-monitor-failed", source);
+        return;
+    }
     {
         // 使用 RAII 临时隐藏窗口以避免闪烁
         ScopedFullscreenVisibility visibility(hwnd);
@@ -362,14 +370,29 @@ static void EnterFullscreenMode(HWND hwnd, WindowShellBase* shell) {
     // 窗口已可见后再触发 NotifyFullscreenChanged（类比 ExitFullscreenMode 第 6 步）
     // 若在窗口隐藏时调用，IsWindowVisible()==FALSE 可能导致 WebView2 刷新异常
     shell->NotifyFullscreenChanged(true);
+    display_diagnostics::Record(hwnd, shell, "fullscreen-enter-end", source);
 }
 
-static void ExitFullscreenMode(HWND hwnd, WindowShellBase* shell) {
+static void ExitFullscreenMode(HWND hwnd, WindowShellBase* shell, const char* source,
+                               bool recovery = false) {
     if (!shell || !shell->savedWindowInfo_.has_value()) return;
+    display_diagnostics::Record(hwnd, shell, "fullscreen-exit-begin", source);
+    display_recovery::UpdatingGuard updating(shell->fullscreenGeometryUpdating_);
 
     // 先将保存的信息提取到局部变量，确保后续 reset 不影响读取
     auto info = *shell->savedWindowInfo_;
     info.window_rect = RecoverRestoreRect(info.window_rect);
+    if (recovery) {
+        info.maximized = false;
+        info.ex_style &= ~WS_EX_TOPMOST;
+        MONITORINFO primary{sizeof(primary)};
+        if (GetMonitorInfoW(MonitorFromPoint(POINT{0,0}, MONITOR_DEFAULTTOPRIMARY), &primary)) {
+            const auto rect = fullscreen_geometry::ClampToWorkArea(
+                {info.window_rect.left, info.window_rect.top, info.window_rect.right, info.window_rect.bottom},
+                {primary.rcWork.left, primary.rcWork.top, primary.rcWork.right, primary.rcWork.bottom});
+            info.window_rect = {rect.left, rect.top, rect.right, rect.bottom};
+        }
+    }
     KillTimer(hwnd, kFullscreenEscapeTimer);
     RemovePropW(hwnd, kFullscreenEscapePending);
     // Restoring across DPI boundaries can reenter the message loop. Clear first
@@ -414,6 +437,7 @@ static void ExitFullscreenMode(HWND hwnd, WindowShellBase* shell) {
 
     // 6. 窗口已可见后再触发 chrome/WebView2 可见性刷新。
     shell->NotifyFullscreenChanged(false);
+    display_diagnostics::Record(hwnd, shell, "fullscreen-exit-end", source);
 }
 
 // ============================================
@@ -430,14 +454,51 @@ bool IsWindowFullscreen() {
     return false;
 }
 
-bool ExitFullscreenIfActive(HWND hwnd) {
+bool ExitFullscreenIfActive(HWND hwnd, const char* source) {
     if (!hwnd) return false;
     auto target = WindowTargetResolver::ResolveByCallerHwnd(hwnd);
     if (!target.Success() || !target.shell || !target.shell->IsFullscreen()) {
         return false;
     }
-    ExitFullscreenMode(target.shell->GetShellHwnd(), target.shell);
+    ExitFullscreenMode(target.shell->GetShellHwnd(), target.shell, source);
     return true;
+}
+
+bool RecoverWindowToPrimary(HWND hwnd, const char* source, bool onlyIfFullscreen) {
+    auto target = WindowTargetResolver::ResolveByCallerHwnd(hwnd);
+    if (!target.Success() || !target.shell) return false;
+    auto* shell = target.shell;
+    const bool eligible = shell->IsFullscreen() || !onlyIfFullscreen;
+    if (!eligible || shell->fullscreenGeometryUpdating_) return false;
+    display_recovery::UpdatingGuard updating(shell->fullscreenGeometryUpdating_);
+    display_diagnostics::Record(hwnd, shell, "recovery-begin", source);
+    // Emergency recovery overrides explicit always-on-top too; otherwise the
+    // main window's WM_WINDOWPOSCHANGED guard would immediately reinstate it.
+    if (auto* main = WindowManager::GetInstance().GetMainWindow(); main && main->GetShellHwnd() == hwnd)
+        main->SetExpectedTopmost(false);
+    const bool recovered = display_recovery::RecoverDisplayChange(eligible, false,
+        [&] { ExitFullscreenMode(hwnd, shell, source, true); }, [&] {
+            // Explicit recovery must work even if already windowed/minimized.
+            if (IsIconic(hwnd) || IsZoomed(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+            MONITORINFO primary{sizeof(primary)};
+            if (!GetMonitorInfoW(MonitorFromPoint(POINT{0,0}, MONITOR_DEFAULTTOPRIMARY), &primary)) {
+                display_diagnostics::Record(hwnd, shell, "recovery-primary-query-failed", source);
+                return;
+            }
+            RECT rect{};
+            if (!GetWindowRect(hwnd, &rect)) return;
+            const auto clamped = fullscreen_geometry::ClampToWorkArea(
+                {rect.left, rect.top, rect.right, rect.bottom},
+                {primary.rcWork.left, primary.rcWork.top, primary.rcWork.right, primary.rcWork.bottom});
+            const bool ok = SetWindowPos(hwnd, HWND_NOTOPMOST, clamped.left, clamped.top,
+                clamped.right-clamped.left, clamped.bottom-clamped.top,
+                SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW) != FALSE;
+            const std::string detail = "setWindowPosOk=" + std::to_string(ok) +
+                " win32=" + std::to_string(ok ? ERROR_SUCCESS : GetLastError());
+            display_diagnostics::Record(hwnd, shell, "recovery-clamp", source, detail.c_str());
+        });
+    display_diagnostics::Record(hwnd, shell, "recovery-end", source);
+    return recovered;
 }
 
 void ReflowFullscreenWindow(HWND hwnd) {
@@ -473,17 +534,17 @@ void BeginFullscreenEscape(HWND hwnd) {
     if (!SetTimer(hwnd, kFullscreenEscapeTimer, 750,
         [](HWND window, UINT, UINT_PTR id, DWORD) {
             KillTimer(window, id);
-            if (RemovePropW(window, kFullscreenEscapePending)) ExitFullscreenIfActive(window);
+            if (RemovePropW(window, kFullscreenEscapePending)) ExitFullscreenIfActive(window, "escape-timeout");
         })) {
         RemovePropW(hwnd, kFullscreenEscapePending);
-        ExitFullscreenIfActive(hwnd);
+        ExitFullscreenIfActive(hwnd, "escape-timer-failed");
     }
 }
 
 void CompleteFullscreenEscape(HWND hwnd, bool consumed) {
     if (!RemovePropW(hwnd, kFullscreenEscapePending)) return;
     KillTimer(hwnd, kFullscreenEscapeTimer);
-    if (!consumed) ExitFullscreenIfActive(hwnd);
+    if (!consumed) ExitFullscreenIfActive(hwnd, "escape-not-consumed");
 }
 
 bool HandleNativeFullscreenKey(HWND hwnd, WPARAM key, LPARAM flags, WebViewHost* host) {
@@ -491,7 +552,7 @@ bool HandleNativeFullscreenKey(HWND hwnd, WPARAM key, LPARAM flags, WebViewHost*
     auto target = WindowTargetResolver::ResolveByCallerHwnd(hwnd);
     if (!target.Success() || !target.shell || !target.shell->IsFullscreen()) return false;
     if (flags & (1LL << 30)) return true;
-    if (key == VK_F11 || !host || !host->IsReady()) return ExitFullscreenIfActive(hwnd);
+    if (key == VK_F11 || !host || !host->IsReady()) return ExitFullscreenIfActive(hwnd, key == VK_F11 ? "native-F11" : "native-Escape-host-unready");
     BeginFullscreenEscape(hwnd);
     // Host-focused path has no real DOM event. Offer the page a cancelable
     // event before the same native fallback; do not hold a shell pointer.
@@ -1144,10 +1205,10 @@ api::Result<wn::SetFullscreenResult> WindowSetFullscreen(const wn::SetFullscreen
 
     bool currentlyFull = target.shell->IsFullscreen();
     if (p.enabled && !currentlyFull) {
-        EnterFullscreenMode(target.shell->GetShellHwnd(), target.shell);
+        EnterFullscreenMode(target.shell->GetShellHwnd(), target.shell, "window.setFullscreen");
     }
     else if (!p.enabled && currentlyFull) {
-        ExitFullscreenMode(target.shell->GetShellHwnd(), target.shell);
+        ExitFullscreenMode(target.shell->GetShellHwnd(), target.shell, "window.setFullscreen");
     }
 
     wn::SetFullscreenResult result;
@@ -1168,9 +1229,9 @@ api::Result<wn::ToggleFullscreenResult> WindowToggleFullscreen(const wn::ToggleF
 
     bool currentlyFull = target.shell->IsFullscreen();
     if (!currentlyFull) {
-        EnterFullscreenMode(target.shell->GetShellHwnd(), target.shell);
+        EnterFullscreenMode(target.shell->GetShellHwnd(), target.shell, "window.toggleFullscreen");
     } else {
-        ExitFullscreenMode(target.shell->GetShellHwnd(), target.shell);
+        ExitFullscreenMode(target.shell->GetShellHwnd(), target.shell, "window.toggleFullscreen");
     }
 
     wn::ToggleFullscreenResult result;
@@ -1805,7 +1866,7 @@ api::Result<wn::EnterFullscreenResult> WindowEnterFullscreen(const wn::EnterFull
     }
 
     // fullscreen implementation still in WindowApi.cpp (stealth DWM)
-    EnterFullscreenMode(target.shell->GetShellHwnd(), target.shell);
+    EnterFullscreenMode(target.shell->GetShellHwnd(), target.shell, "window.enterFullscreen");
     wn::EnterFullscreenResult result;
     result.isFullscreen = true;
     return result;
@@ -1826,7 +1887,7 @@ api::Result<wn::ExitFullscreenResult> WindowExitFullscreen(const wn::ExitFullscr
     }
 
     // fullscreen implementation still in WindowApi.cpp (stealth DWM)
-    ExitFullscreenMode(target.shell->GetShellHwnd(), target.shell);
+    ExitFullscreenMode(target.shell->GetShellHwnd(), target.shell, "window.exitFullscreen");
     wn::ExitFullscreenResult result;
     result.isFullscreen = false;
     return result;

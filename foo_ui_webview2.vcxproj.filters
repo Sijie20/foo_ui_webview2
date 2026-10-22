@@ -186,6 +186,9 @@
     <ClCompile Include="src\window\WindowChromeApplier.cpp">
       <Filter>src\window</Filter>
     </ClCompile>
+    <ClCompile Include="src\window\DisplayDiagnostics.cpp">
+      <Filter>src\window</Filter>
+    </ClCompile>
     <ClCompile Include="src\window\WindowBehaviorTrace.cpp">
       <Filter>src\window</Filter>
     </ClCompile>
@@ -456,6 +459,15 @@
       <Filter>src\window</Filter>
     </ClInclude>
     <ClInclude Include="src\window\WindowChromeApplier.h">
+      <Filter>src\window</Filter>
+    </ClInclude>
+    <ClInclude Include="src\window\DisplayDiagnostics.h">
+      <Filter>src\window</Filter>
+    </ClInclude>
+    <ClInclude Include="src\window\DisplayEvidenceFile.h">
+      <Filter>src\window</Filter>
+    </ClInclude>
+    <ClInclude Include="src\window\DisplayRecoveryPolicy.h">
       <Filter>src\window</Filter>
     </ClInclude>
     <ClInclude Include="src\window\WindowBehaviorTrace.h">

@@ -254,6 +254,7 @@
     <ClCompile Include="src\window\StartupPresentationCoordinator.cpp" />
     <ClCompile Include="src\window\WindowChromeResolver.cpp" />
     <ClCompile Include="src\window\WindowChromeApplier.cpp" />
+    <ClCompile Include="src\window\DisplayDiagnostics.cpp" />
     <ClCompile Include="src\window\WindowBehaviorTrace.cpp" />
     <ClCompile Include="src\window\WindowShellBase.cpp" />
     <ClCompile Include="src\window\ChromeController.cpp" />
@@ -446,6 +447,9 @@
     <ClInclude Include="src\window\WindowChromeState.h" />
     <ClInclude Include="src\window\WindowChromeResolver.h" />
     <ClInclude Include="src\window\WindowChromeApplier.h" />
+    <ClInclude Include="src\window\DisplayDiagnostics.h" />
+    <ClInclude Include="src\window\DisplayEvidenceFile.h" />
+    <ClInclude Include="src\window\DisplayRecoveryPolicy.h" />
     <ClInclude Include="src\window\WindowBehaviorTrace.h" />
     <ClInclude Include="src\window\WindowShellBase.h" />
     <ClInclude Include="src\window\ChromeController.h" />

@@ -1,5 +1,6 @@
 ﻿// MainWindowCaption.cpp — 主窗口的非客户区委派、DPI 变更、标题栏与拖拽区、标题栏按钮度量、系统菜单与尺寸约束
 #include "pch.h"
+#include "window/DisplayDiagnostics.h"
 #include "window/MainWindow.h"
 #include "window/WindowGeometryMath.h"
 #include "webview/WebViewHost.h"
@@ -22,12 +23,13 @@ LRESULT MainWindow::OnNcHitTest(int screenX, int screenY) {
 }
 
 void MainWindow::OnDpiChanged(WPARAM wParam, LPARAM lParam) {
+    const bool recovering = display_diagnostics::OnEnvironmentChange(hwnd_, this, WM_DPICHANGED, wParam, lParam);
     // 更新 DPI 相关尺寸
     UpdateDpiDependentSizes();
     
     // 应用新的窗口大小
     RECT* suggested = reinterpret_cast<RECT*>(lParam);
-    if (suggested) SetWindowPos(hwnd_, nullptr,
+    if (suggested && !recovering) SetWindowPos(hwnd_, nullptr,
         suggested->left, suggested->top,
         suggested->right - suggested->left,
         suggested->bottom - suggested->top,
@@ -36,12 +38,17 @@ void MainWindow::OnDpiChanged(WPARAM wParam, LPARAM lParam) {
     // DPI 提高后，系统建议的尺寸可能已低于新 DPI 下的物理最小值。
     // WM_GETMINMAXINFO 只约束后续的拖拽/程序化改尺寸，不会追认这次
     // 系统主动施加的尺寸，故此处主动 revalidate（Q9-c）。
-    if (IsFullscreen()) ReflowFullscreenWindow(hwnd_);
-    else RevalidateSizeAgainstConstraints();
+    if (!recovering) {
+        if (IsFullscreen()) ReflowFullscreenWindow(hwnd_);
+        else RevalidateSizeAgainstConstraints();
+    }
     
     // 通知 WebView DPI 变化
     if (webView_ && webView_->IsReady()) {
-        int dpi = HIWORD(wParam);
+        // Recovery may synchronously move back to another DPI. The outer
+        // notification's wParam then describes the abandoned secondary screen.
+        int dpi = recovering ? static_cast<int>(GetDpiForWindow(hwnd_)) : HIWORD(wParam);
+        if (dpi <= 0) dpi = window_geometry::kBaselineDpi;
         double dpiScale = dpi / 96.0;
         
         // 1. 发送 DPI 变化事件

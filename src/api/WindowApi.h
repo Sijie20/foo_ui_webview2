@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "pch.h"
 #include <nlohmann/json.hpp>
+#include <source_location>
 
 using json = nlohmann::json;
 
@@ -116,7 +117,10 @@ bool IsWindowFullscreen();
 // 用途：MainWindow / PopupWindow / API handler 在 maximize / restore / 双击标题栏 /
 // WM_SYSCOMMAND 等场景下，参考 Electron / Tauri 行为，将这些操作路由到先退出全屏。
 // 同时支持 main 与 popup（通过 WindowTargetResolver::ResolveByCallerHwnd 解析 shell）。
-bool ExitFullscreenIfActive(HWND hwnd);
+bool ExitFullscreenIfActive(HWND hwnd, const char* source = std::source_location::current().function_name());
+// Emergency/display recovery: restore chrome, drop topmost/maximize and clamp
+// into the primary work area. Does not depend on WebView focus or JavaScript.
+bool RecoverWindowToPrimary(HWND hwnd, const char* source, bool onlyIfFullscreen = false);
 
 // Reconcile fullscreen + saved restore geometry after DPI/display/work-area changes.
 void ReflowFullscreenWindow(HWND hwnd);

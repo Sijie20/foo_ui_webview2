@@ -1,4 +1,5 @@
 ﻿#include "pch.h"
+#include "window/DisplayDiagnostics.h"
 #include <wtsapi32.h>            // 会话锁定/解锁通知（锁屏即释放内存）
 #pragma comment(lib, "wtsapi32.lib")
 #include "window/MainWindow.h"
@@ -1027,13 +1028,18 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_DISPLAYCHANGE:
         case WM_SETTINGCHANGE: {
-            ReflowFullscreenWindow(hwnd_);
+            if (!display_diagnostics::OnEnvironmentChange(hwnd_, this, msg, wParam, lParam))
+                ReflowFullscreenWindow(hwnd_);
             if (webView_ && !isMinimized_) {
                 RECT physicalClient{};
                 if (GetClientRect(hwnd_, &physicalClient)) webView_->Resize(physicalClient);
             }
             break; // retain the system's setting-change handling
         }
+
+        case display_diagnostics::kDeferredRecoveryMessage:
+            display_diagnostics::OnDeferredRecovery(hwnd_, wParam);
+            return 0;
             
         case WM_GETMINMAXINFO: {
             auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
