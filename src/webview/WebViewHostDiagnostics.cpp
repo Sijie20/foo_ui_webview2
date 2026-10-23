@@ -185,7 +185,8 @@ HRESULT WebViewHost::ProbePageHealth(const PageHealthCallback& callback) {
     const HRESULT hr = webview_->ExecuteScript(
         kHealthProbe,
         Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
-            [callback](HRESULT result, LPCWSTR resultJson) {
+            [callback, state = suspendState_](HRESULT result, LPCWSTR resultJson) {
+                if (!state->CanRun()) return S_OK;
                 try {
                     bool healthy = false;
                     bool hasReadyState = false;

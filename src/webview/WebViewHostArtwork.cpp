@@ -156,7 +156,8 @@ void WebViewHost::SetupCustomProtocol() {
     // 注册请求处理程序
     hr = webview_->add_WebResourceRequested(
         Callback<ICoreWebView2WebResourceRequestedEventHandler>(
-            [this](ICoreWebView2* /*sender*/, ICoreWebView2WebResourceRequestedEventArgs* args) {
+            [this, state = suspendState_](ICoreWebView2* /*sender*/, ICoreWebView2WebResourceRequestedEventArgs* args) {
+                if (!state->CanRun()) return S_OK;
                 // 纵深防御：顶层 catch-all，防止 bad_alloc/length_error 等异常逃逸 COM 回调边界触发 terminate()。
                 try {
                 wil::com_ptr<ICoreWebView2WebResourceRequest> request;

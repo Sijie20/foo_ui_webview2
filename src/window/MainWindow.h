@@ -7,6 +7,7 @@
 #include "window/WindowChromeApplier.h"
 #include "window/WindowChromeState.h"
 #include "window/WindowShellBase.h"
+#include "window/ViewportResizePolicy.h"
 
 // ============================================
 // 标题栏区域定义
@@ -197,6 +198,9 @@ private:
     int titlebarHeight_ = DEFAULT_TITLEBAR_HEIGHT;
     int resizeBorderWidth_ = 8;  // 边框调整大小区域
     int captionButtonWidth_ = 46; // 单个系统按钮宽度
+    bool hideTestbedCaptionButtons_ = false;
+    static bool ReadTestbedHideCaptionButtons();
+    void InstallTestbedCaptionPolicy();
     
     // 可拖拽区域（由 JS 设置）
     std::vector<TitlebarDragRegion> dragRegions_;
@@ -211,9 +215,7 @@ private:
     bool isFullscreen_ = false;  // per-window fullscreen state (replaces g_isFullscreen as authority)
     bool interactiveSizingActive_ = false;  // native interactive sizing loop state; also gates resize coalescing
     unsigned int interactiveSizingSessionId_ = 0;  // increments on each WM_ENTERSIZEMOVE for evidence correlation
-    RECT pendingInteractiveResizeBounds_{};
-    bool hasPendingInteractiveResize_ = false;
-    long long lastInteractiveResizeQpc_ = 0;
+    viewport_resize::Schedule resizeSchedule_;
     // 注: webViewInitialized_ 替换为基类的 IsWebViewReady()
     bool resizable_ = true;  // 是否允许调整大小
     bool frameless_ = true;  // 默认无标题栏（主窗口始终以 frameless 模式启动）
@@ -408,7 +410,7 @@ private:
     void OnCreate();
     void OnClose();
     void OnDestroy();
-    void OnSize(int width, int height);
+    void SyncWebViewToClient(bool force = false);
     void OnPaint();
     void OnContextMenu(int x, int y);
     void OnCommand(WORD cmdId);
@@ -442,7 +444,7 @@ private:
     void ScheduleProcessDeadRebuild(const char* reason);
     void FinalizeStartupRevealSettlement();
     // 拖拽期间的 put_Bounds 合并入口；返回 true 表示本次已被合并（调用方不应再直接 Resize）。
-    bool CoalesceInteractiveResize(const RECT& clientRect);
+    bool CoalesceInteractiveResize(bool force);
     void FlushPendingInteractiveResize();
     void CaptureRuntimeDomProbe(const std::string& phase, int scheduledDelayMs = -1);
     void ScheduleFinalizeStartupRuntimeProbes();

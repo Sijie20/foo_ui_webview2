@@ -23,6 +23,7 @@ void MainWindow::OnTopLevelNavigationStarting() {
 }
 
 bool MainWindow::IsPointInMaximizeButton(int clientX, int clientY) const {
+    if (hideTestbedCaptionButtons_) return false;
     {
         std::lock_guard<std::mutex> lock(regionsMutex_);
         if (!maximizeButtonRegion_ ||
@@ -42,6 +43,7 @@ bool MainWindow::IsPointInMaximizeButton(int clientX, int clientY) const {
 
 bool MainWindow::HandleMaximizeButtonMessage(UINT msg, WPARAM wParam, LPARAM lParam,
                                              LRESULT& result) {
+    if (hideTestbedCaptionButtons_) return false;
     switch (msg) {
     case WM_NCMOUSEMOVE:
     case WM_NCMOUSELEAVE:

@@ -4,6 +4,7 @@
 #include "webview/ArtworkRequestInstrumentation.h"
 #include "webview/ArtworkRequestLifecycle.h"
 #include "webview/ArtworkWorkerQueue.h"
+#include "webview/EnvironmentRecycleState.h"
 #include <dcomp.h>
 #include <atomic>
 #ifdef FBX_SANDBOXED
@@ -26,6 +27,7 @@ public:
 
     WebViewHost() = default;
     ~WebViewHost();
+    void CloseForEnvironmentRecycle() noexcept;
 
     // 禁止复制
     WebViewHost(const WebViewHost&) = delete;
@@ -180,7 +182,9 @@ public:
     
     ICoreWebView2* GetWebView() const { return webview_.get(); }
     ICoreWebView2Controller* GetController() const { return controller_.get(); }
-    ICoreWebView2Environment* GetEnvironment() const { return environment_.get(); }
+    ICoreWebView2Environment* GetEnvironment() const {
+        return suspendState_->shuttingDown_.load(std::memory_order_acquire) ? nullptr : environment_.get();
+    }
 
     // ============================================
     // 异步结果投递前的文档校验（docs/audio-pcm/SPEC.md D5）
@@ -363,10 +367,9 @@ private:
     HCURSOR currentCursor_ = nullptr;
     bool cursorHidden_ = false;
     
-    struct SuspendState {
+    struct SuspendState : webview_recycle::CallbackGate {
         std::atomic<bool> pageHidden{false};
         std::atomic<uint64_t> generation{0};
-        std::atomic<bool> alive{true};
     };
 
     // pageHidden 由 SetVisible 维护，供生产侧可见性判定（IsPageHidden）使用。

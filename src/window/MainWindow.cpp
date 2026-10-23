@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 #include "window/DisplayDiagnostics.h"
+#include "window/TestbedCaptionPolicy.h"
 #include <wtsapi32.h>            // 会话锁定/解锁通知（锁屏即释放内存）
 #pragma comment(lib, "wtsapi32.lib")
 #include "window/MainWindow.h"
@@ -71,7 +72,8 @@ using namespace mainwindow_detail;
 
 bool MainWindow::classRegistered_ = false;
 
-MainWindow::MainWindow() = default;
+MainWindow::MainWindow()
+    : hideTestbedCaptionButtons_(ReadTestbedHideCaptionButtons()) {}
 
 MainWindow::~MainWindow() {
     Destroy();
@@ -288,7 +290,11 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                     if (hMon) {
                         MONITORINFO mi = { sizeof(MONITORINFO) };
                         if (GetMonitorInfo(hMon, &mi)) {
-                            params->rgrc[0] = mi.rcWork;
+                            const RECT proposed = params->rgrc[0];
+                            const auto client = viewport_resize::MaximizedClientRect(
+                                {proposed.left, proposed.top, proposed.right, proposed.bottom},
+                                {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom});
+                            params->rgrc[0] = RECT{client.left, client.top, client.right, client.bottom};
 
                             auto hasAutoHideBar = [&](UINT edge) -> bool {
                                 APPBARDATA abd = { sizeof(APPBARDATA) };
@@ -298,10 +304,12 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                                     SHAppBarMessage(ABM_GETAUTOHIDEBAREX, &abd)) != nullptr;
                             };
                             constexpr int kAutoHideGap = 2;
-                            if (hasAutoHideBar(ABE_TOP))    params->rgrc[0].top    += kAutoHideGap;
-                            if (hasAutoHideBar(ABE_BOTTOM)) params->rgrc[0].bottom -= kAutoHideGap;
-                            if (hasAutoHideBar(ABE_LEFT))   params->rgrc[0].left   += kAutoHideGap;
-                            if (hasAutoHideBar(ABE_RIGHT))  params->rgrc[0].right  -= kAutoHideGap;
+                            if (EqualRect(&params->rgrc[0], &mi.rcWork)) {
+                                if (hasAutoHideBar(ABE_TOP))    params->rgrc[0].top    += kAutoHideGap;
+                                if (hasAutoHideBar(ABE_BOTTOM)) params->rgrc[0].bottom -= kAutoHideGap;
+                                if (hasAutoHideBar(ABE_LEFT))   params->rgrc[0].left   += kAutoHideGap;
+                                if (hasAutoHideBar(ABE_RIGHT))  params->rgrc[0].right  -= kAutoHideGap;
+                            }
                         }
                     }
                 }
@@ -321,6 +329,18 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             // 使用窗口坐标（不是客户区坐标）
             // 这样即使 WebView 覆盖整个客户区，WM_NCHITTEST 仍会在消息分发前被处理
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+            // The testbed's former button slots are inert even at the outer
+            // resize edge; do this before CSS, snap-layout and border hit tests.
+            if (hideTestbedCaptionButtons_) {
+                POINT clientPt = pt;
+                RECT client{};
+                if (ScreenToClient(hwnd_, &clientPt) && GetClientRect(hwnd_, &client) &&
+                    testbed_caption::InReservedStrip(clientPt.x, clientPt.y,
+                        client.right, titlebarHeight_, captionButtonWidth_)) {
+                    return HTNOWHERE;
+                }
+            }
             
             // 获取窗口矩形（屏幕坐标）
             RECT rcWindow;
@@ -413,7 +433,7 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             // 只有在没有自定义拖拽区域时，才使用默认标题栏拖拽逻辑
             if (!hasCustomDragRegions && clientPt.y < titlebarHeight_) {
                 // 检查是否在系统按钮区域（右侧 138px = 3*46）
-                int captionButtonsWidth = captionButtonWidth_ * 3;
+                int captionButtonsWidth = GetCaptionButtonsWidth();
                 if (clientPt.x >= width - captionButtonsWidth) {
                     // 让 WebView 处理按钮点击
                     return HTCLIENT;
@@ -584,8 +604,7 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_ENTERSIZEMOVE: {
             interactiveSizingActive_ = true;
             ++interactiveSizingSessionId_;
-            hasPendingInteractiveResize_ = false;
-            lastInteractiveResizeQpc_ = 0;
+            resizeSchedule_.Reset();
             const std::string extra = std::string("session=") + std::to_string(interactiveSizingSessionId_) +
                 " interactiveSizingActive=" + WindowChromeTrace::BoolText(interactiveSizingActive_);
             TraceWindowPhase("WM_ENTERSIZEMOVE", nullptr, nullptr, nullptr, nullptr, extra.c_str());
@@ -696,7 +715,14 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             // z-order/位置变化可能改变“是否被完全覆盖”，防抖后重评估
             ScheduleCoverReevaluation();
-            break;
+            // Preserve DefWindowProc's WM_SIZE/WM_MOVE delivery, then read the
+            // final client (including any nested frame/restore adjustment).
+            const LRESULT result = DefWindowProcW(hwnd_, msg, wParam, lParam);
+            if (windowPos && (!(windowPos->flags & SWP_NOSIZE) ||
+                              (windowPos->flags & SWP_FRAMECHANGED))) {
+                SyncWebViewToClient();
+            }
+            return result;
         }
         
         case WM_TIMER:
@@ -851,9 +877,8 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_EXITSIZEMOVE: {
             const unsigned int sessionId = interactiveSizingSessionId_;
             interactiveSizingActive_ = false;
-            // 必须在清 interactiveSizingActive_ 之后：此时 CoalesceInteractiveResize
-            // 已不再拦截，最后一个尺寸保证以真实 put_Bounds 落地。
-            FlushPendingInteractiveResize();
+            // Always sample the final HWND client, even without a queued timer.
+            SyncWebViewToClient(true);
             const std::string extra = std::string("session=") + std::to_string(sessionId) +
                 " interactiveSizingActive=" + WindowChromeTrace::BoolText(interactiveSizingActive_);
             TraceWindowPhase("WM_EXITSIZEMOVE", nullptr, nullptr, nullptr, nullptr, extra.c_str());
@@ -900,6 +925,8 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             }
 
             if (wParam == SIZE_MINIMIZED) {
+                resizeSchedule_.Reset();
+                KillTimer(hwnd_, RESIZE_COALESCE_TIMER_ID);
                 BroadcastWindowStateChangedIfNeeded();
                 // 最小化统一走 background_suspend_policy 投影（不再直调
                 // SetVisible(false)+SetMemoryUsageLow(true)）。投影决定：
@@ -931,8 +958,7 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            RECT physicalClient{};
-            if (GetClientRect(hwnd_, &physicalClient)) OnSize(physicalClient.right, physicalClient.bottom);
+            SyncWebViewToClient(wasMaximized != isMaximized_ || wasMinimized);
 
             // 补做最小化期间被推迟的约束校正（见 RevalidateSizeAgainstConstraints
             // 的 iconic 分支）。此时窗口已回到还原态，几何可安全改写。
@@ -1030,10 +1056,7 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_SETTINGCHANGE: {
             if (!display_diagnostics::OnEnvironmentChange(hwnd_, this, msg, wParam, lParam))
                 ReflowFullscreenWindow(hwnd_);
-            if (webView_ && !isMinimized_) {
-                RECT physicalClient{};
-                if (GetClientRect(hwnd_, &physicalClient)) webView_->Resize(physicalClient);
-            }
+            SyncWebViewToClient(true);
             break; // retain the system's setting-change handling
         }
 
@@ -1320,7 +1343,7 @@ void MainWindow::OnDestroy() {
     KillTimer(hwnd_, PROCESS_DEAD_REBUILD_TIMER_ID);
     KillTimer(hwnd_, BACKDROP_KICK_EXIT_TIMER_ID);
     KillTimer(hwnd_, RESIZE_COALESCE_TIMER_ID);
-    hasPendingInteractiveResize_ = false;
+    resizeSchedule_.Reset();
     startupPresentationCoordinator_.MarkClosed();
     SyncStartupRevealProjection();
     startupSurfaceAuthorityPending_ = false;
@@ -1381,14 +1404,20 @@ void MainWindow::HideWindowToTray() {
 }
 
 
-void MainWindow::OnSize(int width, int height) {
+void MainWindow::SyncWebViewToClient(bool force) {
+    if (force || !interactiveSizingActive_) {
+        resizeSchedule_.Reset();
+        if (hwnd_) KillTimer(hwnd_, RESIZE_COALESCE_TIMER_ID);
+    }
     if (!webView_ || !webView_->IsReady())
         return;
 
     RECT clientRect{};
-    GetClientRect(hwnd_, &clientRect);
+    if (!hwnd_ || !GetClientRect(hwnd_, &clientRect)) return;
+    const int width = clientRect.right - clientRect.left;
+    const int height = clientRect.bottom - clientRect.top;
 
-    if (isMinimized_) {
+    if (isMinimized_ || IsIconic(hwnd_)) {
         // 不手动隐藏 WebView — WebView2 运行时自动处理
         return;
     }
@@ -1401,7 +1430,7 @@ void MainWindow::OnSize(int width, int height) {
         std::ostringstream stream;
         stream << "[StartupSurfaceAuthority]"
                << " t=" << WindowChromeTrace::RelativeMs() << "ms"
-               << " owner=OnSize"
+               << " owner=SyncWebViewToClient"
                << " action=cache-only"
                << " startupSurfaceAuthorityPending=" << WindowChromeTrace::BoolText(startupSurfaceAuthorityPending_)
                << " startupSurfaceCommitPending=" << WindowChromeTrace::BoolText(startupSurfaceCommitPending_)
@@ -1414,23 +1443,19 @@ void MainWindow::OnSize(int width, int height) {
             " height=" + std::to_string(height) +
             " cachedBounds=" + cachedBoundsText +
             " startupSurfaceAuthorityPending=" + WindowChromeTrace::BoolText(startupSurfaceAuthorityPending_);
-        TraceWindowPhase("OnSize.startup-cache-only", nullptr, nullptr, nullptr, nullptr, extra.c_str());
+        TraceWindowPhase("SyncWebViewToClient.startup-cache-only", nullptr, nullptr, nullptr, nullptr, extra.c_str());
         return;
     }
     
     // WebView 覆盖整个客户区，让 DWM 效果完全穿透
     // 不再内缩，窗口调整由 WM_NCHITTEST 处理
-    if (CoalesceInteractiveResize(clientRect)) {
+    if (CoalesceInteractiveResize(force)) {
         return;
     }
     webView_->Resize(clientRect);
 }
 
-bool MainWindow::CoalesceInteractiveResize(const RECT& clientRect) {
-    if (!interactiveSizingActive_ || !hwnd_ || !IsWindow(hwnd_)) {
-        return false;
-    }
-
+bool MainWindow::CoalesceInteractiveResize(bool force) {
     static const double qpcMsPerTick = [] {
         LARGE_INTEGER freq{};
         return QueryPerformanceFrequency(&freq) && freq.QuadPart
@@ -1439,27 +1464,20 @@ bool MainWindow::CoalesceInteractiveResize(const RECT& clientRect) {
     }();
 
     LARGE_INTEGER now{};
-    if (qpcMsPerTick == 0.0 || !QueryPerformanceCounter(&now)) {
-        return false;  // 无高精度计时器：退回逐条直通，不引入未知行为
-    }
-
-    const double sinceLastMs = lastInteractiveResizeQpc_ == 0
-        ? RESIZE_COALESCE_MIN_INTERVAL_MS
-        : static_cast<double>(now.QuadPart - lastInteractiveResizeQpc_) * qpcMsPerTick;
-
-    if (sinceLastMs >= RESIZE_COALESCE_MIN_INTERVAL_MS) {
-        lastInteractiveResizeQpc_ = now.QuadPart;
-        hasPendingInteractiveResize_ = false;
+    const double nowMs = qpcMsPerTick != 0.0 && QueryPerformanceCounter(&now)
+        ? static_cast<double>(now.QuadPart) * qpcMsPerTick : -1.0;
+    const bool wasPending = resizeSchedule_.HasPending();
+    if (!resizeSchedule_.Request(interactiveSizingActive_, force, nowMs,
+                                 RESIZE_COALESCE_MIN_INTERVAL_MS)) {
         KillTimer(hwnd_, RESIZE_COALESCE_TIMER_ID);
         return false;
     }
 
-    // 距上次落地过近：只记住最新尺寸。尾随定时器保证「按住不动」时它仍会落地，
+    // 距上次落地过近：登记一次尾刷。刷新时读取当前客户区，保证「按住不动」仍会落地，
     // 而模态循环会分发 WM_TIMER，故无需外部消息泵配合。
-    pendingInteractiveResizeBounds_ = clientRect;
-    if (!hasPendingInteractiveResize_) {
-        hasPendingInteractiveResize_ = true;
-        SetTimer(hwnd_, RESIZE_COALESCE_TIMER_ID, RESIZE_COALESCE_TRAILING_MS, nullptr);
+    if (!wasPending && !SetTimer(hwnd_, RESIZE_COALESCE_TIMER_ID, RESIZE_COALESCE_TRAILING_MS, nullptr)) {
+        resizeSchedule_.Reset();
+        return false;
     }
     return true;
 }
@@ -1468,20 +1486,10 @@ void MainWindow::FlushPendingInteractiveResize() {
     if (hwnd_ && IsWindow(hwnd_)) {
         KillTimer(hwnd_, RESIZE_COALESCE_TIMER_ID);
     }
-    if (!hasPendingInteractiveResize_) {
+    if (!resizeSchedule_.HasPending()) {
         return;
     }
-    hasPendingInteractiveResize_ = false;
-
-    if (!webView_ || !webView_->IsReady() || isMinimized_ || startupSurfaceAuthorityPending_) {
-        return;
-    }
-
-    LARGE_INTEGER now{};
-    if (QueryPerformanceCounter(&now)) {
-        lastInteractiveResizeQpc_ = now.QuadPart;
-    }
-    webView_->Resize(pendingInteractiveResizeBounds_);
+    SyncWebViewToClient(true);
 }
 
 bool MainWindow::BroadcastWindowStateChangedIfNeeded(bool force) {
@@ -1555,6 +1563,8 @@ void MainWindow::OnWebViewReady() {
     RedrawWindow(hwnd_, nullptr, nullptr, 
                  RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
     
+    // Register before the base starts navigation, including after a rebuild.
+    InstallTestbedCaptionPolicy();
     // 调用基类实现（API 注册、回调初始化、页面加载）
     WebViewPanel::OnWebViewReady();
     
@@ -1563,13 +1573,11 @@ void MainWindow::OnWebViewReady() {
     BridgeCore::GetInstance().SetWebView(webView_.get());
     
     // 触发重新布局
-    RECT rect;
-    GetClientRect(hwnd_, &rect);
     hasBroadcastWindowState_ = true;
     lastBroadcastIsMaximized_ = isMaximized_;
     lastBroadcastIsMinimized_ = isMinimized_;
     lastBroadcastIsActive_ = isActive_;
-    OnSize(rect.right, rect.bottom);
+    SyncWebViewToClient(true);
     LogWebViewLifecycle("window.webview-ready-sized");
 
     // cold-start reveal 路径下该标志始终为 false（immediate-show 才会置位）。
@@ -1807,12 +1815,10 @@ bool MainWindow::RefreshStartupRevealSurface() {
         return false;
     }
 
-    RECT clientRect{};
-    GetClientRect(hwnd_, &clientRect);
     if (!webView_->SetVisible(true)) {
         return false;
     }
-    webView_->Resize(clientRect);
+    SyncWebViewToClient(true);
     return true;
 }
 
@@ -1854,7 +1860,7 @@ bool MainWindow::EnsureSurfaceConvergedAfterNativeFrame(const char* reason) {
     RECT nudged = clientRect;
     nudged.right = (nudged.right > 0) ? nudged.right - 1 : 0;
     webView_->Resize(nudged);
-    webView_->Resize(clientRect);
+    SyncWebViewToClient(true);
 
     LogSurfaceDiagnostics((std::string("SurfaceConverge.done/") + reason).c_str());
     return true;
@@ -2159,7 +2165,7 @@ void MainWindow::TryCommitStartupReveal() {
 
         if (hasDeferredSync) {
             const std::string deferredBoundsText = S_FormatNativeRect(deferredBounds);
-            webView_->Resize(deferredBounds);
+            SyncWebViewToClient(true);
 
             std::ostringstream stream;
             stream << "[StartupSurfaceAuthority]"

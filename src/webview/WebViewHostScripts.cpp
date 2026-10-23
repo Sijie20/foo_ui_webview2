@@ -57,7 +57,8 @@ void WebViewHost::InjectSdkBridgeScript() {
     webview_->AddScriptToExecuteOnDocumentCreated(
         sdkScript.c_str(),
         Callback<ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler>(
-            [](HRESULT result, LPCWSTR /*id*/) {
+            [state = suspendState_](HRESULT result, LPCWSTR /*id*/) {
+                if (!state->CanRun()) return S_OK;
                 if (SUCCEEDED(result)) {
                     LOG("SDK Bridge script injected successfully");
                 } else {

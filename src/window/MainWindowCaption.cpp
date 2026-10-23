@@ -3,10 +3,26 @@
 #include "window/DisplayDiagnostics.h"
 #include "window/MainWindow.h"
 #include "window/WindowGeometryMath.h"
+#include "window/TestbedCaptionPolicy.h"
 #include "webview/WebViewHost.h"
 #include "api/EventEmit.h"
 #include "api/WindowApi.h"
 #include "api/generated/WindowSchema.h"
+
+bool MainWindow::ReadTestbedHideCaptionButtons() {
+    wchar_t value[2]{};
+    const DWORD length = GetEnvironmentVariableW(L"FBX_TESTBED_HIDE_CAPTION_BUTTONS", value, 2);
+    return length == 1 && testbed_caption::ParseHideButtons(std::wstring_view(value, length));
+}
+
+void MainWindow::InstallTestbedCaptionPolicy() {
+    if (!hideTestbedCaptionButtons_ || !webView_ || !webView_->GetWebView()) return;
+    const HRESULT hr = webView_->GetWebView()->AddScriptToExecuteOnDocumentCreated(
+        testbed_caption::kHideButtonsScript, nullptr);
+    if (FAILED(hr)) {
+        LOG("MainWindow: Failed to install testbed caption policy, hr=", pfc::format_hex((uint32_t)hr));
+    }
+}
 
 // ============================================
 // 客户区扩展到标题栏 - 核心实现
@@ -56,8 +72,8 @@ void MainWindow::OnDpiChanged(WPARAM wParam, LPARAM lParam) {
         dpiChanged.dpi = dpi;
         dpiChanged.dpiScale = dpiScale;
         dpiChanged.titlebarHeight = titlebarHeight_;
-        dpiChanged.captionButtonWidth = captionButtonWidth_;
-        dpiChanged.captionButtonsWidth = captionButtonWidth_ * 3;
+        dpiChanged.captionButtonWidth = GetCaptionButtonWidth();
+        dpiChanged.captionButtonsWidth = GetCaptionButtonsWidth();
         api::emit::Post<api::window::events::DpiChanged>(*webView_, dpiChanged);
         
         // 2. 注入 CSS 变量更新脚本
@@ -66,17 +82,13 @@ void MainWindow::OnDpiChanged(WPARAM wParam, LPARAM lParam) {
             L"root.style.setProperty('--dpi', '" + std::to_wstring(dpi) + L"');"
             L"root.style.setProperty('--dpi-scale', '" + std::to_wstring(dpiScale) + L"');"
             L"root.style.setProperty('--titlebar-height', '" + std::to_wstring(titlebarHeight_) + L"px');"
-            L"root.style.setProperty('--caption-button-width', '" + std::to_wstring(captionButtonWidth_) + L"px');"
+            L"root.style.setProperty('--caption-button-width', '" + std::to_wstring(GetCaptionButtonWidth()) + L"px');"
             L"console.log('[DPI] CSS variables updated: dpi=' + " + std::to_wstring(dpi) + L");"
             L"})();";
         webView_->ExecuteScript(cssUpdateScript, nullptr);
         
         // 3. 刷新 WebView 渲染以防止模糊
-        if (!isMinimized_) {
-            RECT clientRect;
-            GetClientRect(hwnd_, &clientRect);
-            webView_->Resize(clientRect);
-        }
+        SyncWebViewToClient(true);
         
         FB2K_console_print("[WebView2 UI] DPI changed to ", dpi, " (scale: ", dpiScale, ")");
     }
@@ -93,9 +105,7 @@ void MainWindow::SetTitlebarHeight(int height) {
         ExtendFrameIntoClientArea();
         
         // 触发重新布局
-        RECT rect;
-        GetClientRect(hwnd_, &rect);
-        OnSize(rect.right, rect.bottom);
+        SyncWebViewToClient(true);
     }
 }
 
@@ -125,18 +135,19 @@ void MainWindow::ClearNoDragRegions() {
 }
 
 int MainWindow::GetCaptionButtonWidth() const {
-    return captionButtonWidth_;
+    return hideTestbedCaptionButtons_ ? 0 : captionButtonWidth_;
 }
 
 int MainWindow::GetCaptionButtonsWidth() const {
-    return captionButtonWidth_ * 3;  // 最小化、最大化、关闭
+    return testbed_caption::ButtonsWidth(captionButtonWidth_, hideTestbedCaptionButtons_);
 }
 
 RECT MainWindow::GetCaptionButtonsRect() const {
+    if (hideTestbedCaptionButtons_) return RECT{};
     RECT rc;
     GetClientRect(hwnd_, &rc);
     
-    int buttonsWidth = captionButtonWidth_ * 3;
+    int buttonsWidth = GetCaptionButtonsWidth();
     
     return RECT{
         rc.right - buttonsWidth,  // left

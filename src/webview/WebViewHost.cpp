@@ -22,9 +22,14 @@ using namespace Microsoft::WRL;
 // ==========================================================================
 
 WebViewHost::~WebViewHost() {
+    WebViewEnvironment::GetInstance().UnregisterHost(this);
+    CloseForEnvironmentRecycle();
+}
+
+void WebViewHost::CloseForEnvironmentRecycle() noexcept {
+    if (!suspendState_->Stop()) return;
     try {
     LogLifecycle("host.destroy.begin");
-    suspendState_->alive.store(false, std::memory_order_release);
     suspendState_->generation.fetch_add(1, std::memory_order_acq_rel);
     // Mark alive-flag false so pending completions skip member access,
     // then drain the worker queue (cancels in-flight + queued items).
@@ -66,18 +71,19 @@ WebViewHost::~WebViewHost() {
         // 清理 DirectComposition
         CleanupDirectComposition();
         
-        if (controller_) {
-            controller_->Close();
-            controller_.reset();
-        }
-        compositionController_.reset();
-        webview_.reset();
-        environment_.reset();
     }
     catch (...) {
         // 析构函数禁止抛异常 — 关闭期间 WebView2 运行时可能因
         // 异步清理竞态抛出异常，在此吞掉以避免 std::terminate
     }
+    // Even if an earlier cleanup operation throws, drop every host-held COM
+    // reference. Close explicitly breaks event-handler reference cycles.
+    try { if (controller_) controller_->Close(); } catch (...) {}
+    compositionController3_.reset();
+    compositionController_.reset();
+    controller_.reset();
+    webview_.reset();
+    environment_.reset();
 }
 
 HRESULT WebViewHost::Initialize(HWND parentHwnd, InitCallback callback, bool useVisualHosting) {
@@ -100,9 +106,9 @@ HRESULT WebViewHost::Initialize(HWND parentHwnd, InitCallback callback, bool use
     } else {
         LOG("Panel mode: skipping DirectComposition, using standard Controller");
     }
-    WebViewEnvironment::GetInstance().GetEnvironment(
+    return WebViewEnvironment::GetInstance().GetEnvironment(
         [this, state = suspendState_, callback, dcompHr](ICoreWebView2Environment* env) {
-            if (!state->alive.load(std::memory_order_acquire)) return;
+            if (!state->CanRun()) return;
             if (!env) {
                 LogLifecycle("host.environment.failed", "environment=null");
                 LOG("Failed to get WebView2 environment");
@@ -110,6 +116,7 @@ HRESULT WebViewHost::Initialize(HWND parentHwnd, InitCallback callback, bool use
                 return;
             }
             
+            WebViewEnvironment::GetInstance().RegisterHost(this);
             environment_ = env;
             LogLifecycle("host.environment.ready");
             LOG("Using shared WebView2 environment");
@@ -118,8 +125,6 @@ HRESULT WebViewHost::Initialize(HWND parentHwnd, InitCallback callback, bool use
             CreateControllerWithEnvironment(env, callback, SUCCEEDED(dcompHr));
         }
     );
-    
-    return S_OK;
 }
 
 void WebViewHost::CreateControllerWithEnvironment(ICoreWebView2Environment* env, InitCallback callback, bool useDComp) {
@@ -132,7 +137,11 @@ void WebViewHost::CreateControllerWithEnvironment(ICoreWebView2Environment* env,
             parentHwnd_,
             Callback<ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler>(
                 [this, state = suspendState_, callback](HRESULT result, ICoreWebView2CompositionController* compositionController) -> HRESULT {
-                    if (!state->alive.load(std::memory_order_acquire)) return S_OK;
+                    if (!state->CanRun()) {
+                        wil::com_ptr<ICoreWebView2Controller> stale;
+                        if (compositionController && SUCCEEDED(compositionController->QueryInterface(IID_PPV_ARGS(&stale)))) stale->Close();
+                        return S_OK;
+                    }
                     
                     if (FAILED(result) || !compositionController) {
                         LogLifecycle("controller.create.failed",
@@ -155,6 +164,9 @@ void WebViewHost::CreateControllerWithEnvironment(ICoreWebView2Environment* env,
                     window_behavior_trace::Com(parentHwnd_, "controller.put_IsVisible", 1);
                     controller_->put_IsVisible(TRUE);
                     controller_->get_CoreWebView2(&webview_);
+                    UINT32 browserPid = 0;
+                    if (webview_ && SUCCEEDED(webview_->get_BrowserProcessId(&browserPid)))
+                        WebViewEnvironment::GetInstance().TrackBrowserProcess(browserPid);
                     artworkLifecycle_.OnControllerCreated();
                     if (!artworkWorkerQueue_) {
                         artworkWorkerQueue_ =
@@ -205,7 +217,10 @@ void WebViewHost::CreateControllerWithEnvironment(ICoreWebView2Environment* env,
         parentHwnd_,
         Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
             [this, state = suspendState_, callback](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
-                if (!state->alive.load(std::memory_order_acquire)) return S_OK;
+                if (!state->CanRun()) {
+                    if (controller) controller->Close();
+                    return S_OK;
+                }
                 
                 if (FAILED(result) || !controller) {
                     LogLifecycle("controller.create.failed",
@@ -219,6 +234,9 @@ void WebViewHost::CreateControllerWithEnvironment(ICoreWebView2Environment* env,
                 window_behavior_trace::Com(parentHwnd_, "controller.put_IsVisible", 1);
                 controller_->put_IsVisible(TRUE);
                 controller->get_CoreWebView2(&webview_);
+                UINT32 browserPid = 0;
+                if (webview_ && SUCCEEDED(webview_->get_BrowserProcessId(&browserPid)))
+                    WebViewEnvironment::GetInstance().TrackBrowserProcess(browserPid);
                 artworkLifecycle_.OnControllerCreated();
                 if (!artworkWorkerQueue_) {
                     artworkWorkerQueue_ =

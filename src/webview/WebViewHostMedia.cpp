@@ -279,7 +279,8 @@ void WebViewHost::SetupMediaProtocol() {
         filter.c_str(), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT))) return;
     const HRESULT hr = webview_->add_WebResourceRequested(
         Microsoft::WRL::Callback<ICoreWebView2WebResourceRequestedEventHandler>(
-            [this](ICoreWebView2*, ICoreWebView2WebResourceRequestedEventArgs* args) -> HRESULT {
+            [this, state = suspendState_](ICoreWebView2*, ICoreWebView2WebResourceRequestedEventArgs* args) -> HRESULT {
+                if (!state->CanRun()) return S_OK;
                 try { HandleMediaRequest(args); }
                 catch (...) {
                     try {

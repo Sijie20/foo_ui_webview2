@@ -225,6 +225,7 @@ void WebViewHost::TrySuspendDeep() {
     HRESULT hr = wv3->TrySuspend(
         Callback<ICoreWebView2TrySuspendCompletedHandler>(
             [state, webview, generation](HRESULT errorCode, BOOL isSuccessful) -> HRESULT {
+                if (!state->CanRun()) return S_OK;
                 std::ostringstream completion;
                 completion << "event=suspend.completed"
                            << " uptimeMs=" << GetTickCount64()
@@ -240,7 +241,6 @@ void WebViewHost::TrySuspendDeep() {
                            << " hr=0x" << pfc::format_hex((uint32_t)errorCode)
                            << " success=" << (isSuccessful != FALSE ? 1 : 0);
                 WebViewHost::WriteLifecycleLog(completion.str());
-                if (!state->alive.load(std::memory_order_acquire)) return S_OK;
 
                 if (generation != state->generation.load(std::memory_order_acquire)) {
                     // 代数过期：请求发出后页面已恢复可见（put_IsVisible(TRUE)

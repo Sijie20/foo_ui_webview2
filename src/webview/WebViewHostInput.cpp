@@ -19,7 +19,8 @@ void WebViewHost::SetupCursorHandling() {
     // 注册光标变化事件
     HRESULT hr = compositionController_->add_CursorChanged(
         Callback<ICoreWebView2CursorChangedEventHandler>(
-            [this](ICoreWebView2CompositionController* sender, IUnknown* /*args*/) {
+            [this, state = suspendState_](ICoreWebView2CompositionController* sender, IUnknown* /*args*/) {
+                if (!state->CanRun()) return S_OK;
                 if (!parentHwnd_) return S_OK;
                 
                 // CompositionController 模式下 Chromium 不会处理 WM_SETCURSOR,

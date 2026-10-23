@@ -548,9 +548,7 @@ void MainWindow::SetResizable(bool resizable) {
         ApplyResolvedChrome(true);
         
         // 触发重新布局以更新 WebView 边距
-        RECT rect;
-        GetClientRect(hwnd_, &rect);
-        OnSize(rect.right, rect.bottom);
+        SyncWebViewToClient(true);
         
         LOG("SetResizable: window style updated via shared chrome apply");
     }

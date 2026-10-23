@@ -47,7 +47,8 @@ void WebViewHost::RegisterMessageHandler() {
     // 监听来自 JavaScript 的消息
     webview_->add_WebMessageReceived(
         Callback<ICoreWebView2WebMessageReceivedEventHandler>(
-            [this](ICoreWebView2* sender, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+            [this, state = suspendState_](ICoreWebView2* sender, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+                if (!state->CanRun()) return S_OK;
                 // 安全: Origin 验证门禁。顶层文档与发消息的文档都要可信。
                 wil::unique_cotaskmem_string messageSource;
                 if (!IsOriginAllowed(sender) || FAILED(args->get_Source(&messageSource)) || !messageSource ||
@@ -77,7 +78,8 @@ void WebViewHost::RegisterMessageHandler() {
     // Reject before mutating the current document's artwork/media generation.
     const HRESULT navigationStartingHr = webview_->add_NavigationStarting(
         Callback<ICoreWebView2NavigationStartingEventHandler>(
-            [this](ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
+            [this, state = suspendState_](ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
+                if (!state->CanRun()) return S_OK;
 #ifdef FBX_SANDBOXED
                 if (!args) return E_POINTER;
                 wil::unique_cotaskmem_string uri;
@@ -122,7 +124,8 @@ void WebViewHost::RegisterMessageHandler() {
 
     const HRESULT navigationCompletedHr = webview_->add_NavigationCompleted(
         Callback<ICoreWebView2NavigationCompletedEventHandler>(
-            [this](ICoreWebView2* /*sender*/, ICoreWebView2NavigationCompletedEventArgs* args) {
+            [this, state = suspendState_](ICoreWebView2* /*sender*/, ICoreWebView2NavigationCompletedEventArgs* args) {
+                if (!state->CanRun()) return S_OK;
                 UINT64 completedId = 0;
                 args->get_NavigationId(&completedId);
 #ifdef FBX_SANDBOXED
@@ -167,7 +170,8 @@ void WebViewHost::RegisterMessageHandler() {
         EventRegistrationToken newWindowToken{};
         webview_->add_NewWindowRequested(
             Callback<ICoreWebView2NewWindowRequestedEventHandler>(
-                [host](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
+                [host, state = suspendState_](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
+                    if (!state->CanRun()) return S_OK;
                     if (!args) {
                         return S_OK;
                     }
@@ -205,7 +209,8 @@ void WebViewHost::RegisterMessageHandler() {
         EventRegistrationToken downloadToken{};
         const HRESULT hr = webview4->add_DownloadStarting(
             Callback<ICoreWebView2DownloadStartingEventHandler>(
-                [](ICoreWebView2*, ICoreWebView2DownloadStartingEventArgs* args) -> HRESULT {
+                [state = suspendState_](ICoreWebView2*, ICoreWebView2DownloadStartingEventArgs* args) -> HRESULT {
+                    if (!state->CanRun()) return S_OK;
                     if (!args) return E_POINTER;
                     const HRESULT cancelHr = args->put_Cancel(TRUE);
                     args->put_Handled(TRUE);
@@ -261,7 +266,8 @@ HRESULT WebViewHost::ExecuteScript(const std::wstring& script, ScriptCallback ca
     return webview_->ExecuteScript(
         script.c_str(),
         Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
-            [callback](HRESULT /*result*/, LPCWSTR resultJson) {
+            [callback, state = suspendState_](HRESULT /*result*/, LPCWSTR resultJson) {
+                if (!state->CanRun()) return S_OK;
                 if (callback && resultJson) {
                     // 异常安全边界：ExecuteScript 完成回调运行在主线程的 WebView2 COM 回调里，
                     // 回调体内（如 nlohmann::json 访问）抛出的 C++ 异常一旦逃逸到原生回调边界，

@@ -54,7 +54,8 @@ void WebViewHost::SetupWebView() {
     // Register focus events for panel integration
     controller_->add_GotFocus(
         Callback<ICoreWebView2FocusChangedEventHandler>(
-            [this](ICoreWebView2Controller* sender, IUnknown* /*args*/) -> HRESULT {
+            [this, state = suspendState_](ICoreWebView2Controller* sender, IUnknown* /*args*/) -> HRESULT {
+                if (!state->CanRun()) return S_OK;
                 RECT bounds{};
                 const bool hasBounds = sender && SUCCEEDED(sender->get_Bounds(&bounds));
                 std::ostringstream stream;
@@ -79,7 +80,8 @@ void WebViewHost::SetupWebView() {
 
     controller_->add_LostFocus(
         Callback<ICoreWebView2FocusChangedEventHandler>(
-            [this](ICoreWebView2Controller* sender, IUnknown* /*args*/) -> HRESULT {
+            [this, state = suspendState_](ICoreWebView2Controller* sender, IUnknown* /*args*/) -> HRESULT {
+                if (!state->CanRun()) return S_OK;
                 RECT bounds{};
                 const bool hasBounds = sender && SUCCEEDED(sender->get_Bounds(&bounds));
                 std::ostringstream stream;

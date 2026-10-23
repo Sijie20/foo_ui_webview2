@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 #include "webview/WebViewEnvironment.h"
+#include "webview/WebViewHost.h"
 #include "core/WebViewContext.h"
 #include "settings/SecurityConfig.h"
 #include "prefs/PreferencesPage.h"   // webview_prefs::GetPreheatEnabled / GetCdpPort
@@ -102,65 +103,73 @@ void WebViewEnvironment::MigrateSharedUserData() {
     }
 }
 
+bool WebViewEnvironment::IsReady() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return lifecycle_.ready && SUCCEEDED(lifecycle_.AccessStatus());
+}
+
+void WebViewEnvironment::RegisterHost(WebViewHost* host) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    hosts_.insert(host);
+}
+
+void WebViewEnvironment::UnregisterHost(WebViewHost* host) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    hosts_.erase(host);
+}
+
+void WebViewEnvironment::TrackBrowserProcess(DWORD pid) {
+    if (!pid) return;
+    wil::unique_handle process(OpenProcess(SYNCHRONIZE, FALSE, pid));
+    if (!process) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    browserProcesses_.insert_or_assign(pid, std::move(process));
+}
+
 void WebViewEnvironment::Preheat() {
-    bool shouldCreate = false;
-    
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        
-        if (ready_ || creating_) {
-            return;  // Already ready or creating
-        }
-        
-        creating_ = true;  // Set flag while holding lock
-        shouldCreate = true;
-    }
-    // Lock released here - important to avoid deadlock if callback is synchronous
-    
-    if (shouldCreate) {
-        console::print("[WebView2 UI] Preheating WebView2 environment...");
-        CreateEnvironmentInternal();
-    }
+    (void)GetEnvironment({});
 }
 
-void WebViewEnvironment::GetEnvironment(const EnvironmentCallback& callback) {
-    ICoreWebView2Environment* envToReturn = nullptr;
-    bool shouldStartCreating = false;
-    
+HRESULT WebViewEnvironment::GetEnvironment(const EnvironmentCallback& callback) {
+    if (!core_api::is_main_thread()) return RPC_E_WRONG_THREAD;
+    bool recycle = false;
+    HRESULT status;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        
-        if (ready_ && environment_) {
-            // Environment is ready, will call callback outside lock
-            envToReturn = environment_.get();
-        } else {
-            // Add to pending callbacks
-            if (callback) {
-                pendingCallbacks_.push_back(callback);
+        status = lifecycle_.AccessStatus();
+        recycle = SUCCEEDED(status) && lifecycle_.invalidated;
+    }
+    if (recycle) ReleaseEnvironment(false);
+
+    wil::com_ptr<ICoreWebView2Environment> snapshot;
+    bool create = false;
+    std::uint64_t generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        status = lifecycle_.GetEnvironment(environment_, snapshot);
+        if (status == E_PENDING) {
+            if (callback) pendingCallbacks_.push_back(callback);
+            if (!lifecycle_.creating) {
+                lifecycle_.creating = true;
+                create = true;
             }
-            
-            // Start creating if not already
-            if (!creating_) {
-                creating_ = true;  // Set flag while holding lock
-                shouldStartCreating = true;
-            }
+            generation = lifecycle_.generation;
         }
     }
-    // Lock released here - important to avoid deadlock if callback is synchronous
-    
-    // Call callback outside lock to avoid deadlock
-    if (envToReturn && callback) {
-        callback(envToReturn);
-        return;
+    if (FAILED(status) && status != E_PENDING) {
+        if (callback) callback(nullptr);
+        return status;
     }
-    
-    if (shouldStartCreating) {
-        CreateEnvironmentInternal();
+    if (snapshot) {
+        if (callback) callback(snapshot.get());
+    } else if (create) {
+        CreateEnvironmentInternal(generation);
     }
+    return S_OK;
 }
 
-void WebViewEnvironment::CreateEnvironmentInternal() {
-    // Note: creating_ flag should already be set by caller
+void WebViewEnvironment::CreateEnvironmentInternal(std::uint64_t generation) {
+    // Note: lifecycle_.creating flag should already be set by caller
     
     // 必须在 GetUserDataPath 创建目录之前：迁移以目标目录不存在为前提
     MigrateSharedUserData();
@@ -171,7 +180,7 @@ void WebViewEnvironment::CreateEnvironmentInternal() {
     HRESULT checkHr = GetAvailableCoreWebView2BrowserVersionString(nullptr, &version);
     if (FAILED(checkHr) || !version) {
         console::print("[WebView2 UI] WebView2 Runtime not available");
-        DrainPendingCallbacksOnFailure();
+        DrainPendingCallbacksOnFailure(generation);
         return;
     }
     
@@ -271,27 +280,28 @@ void WebViewEnvironment::CreateEnvironmentInternal() {
         userDataPath.c_str(),       // User data directory
         envOptions.Get(),           // Environment options
         Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-            [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+            [this, generation](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
                 std::vector<EnvironmentCallback> callbacksToInvoke;
-                ICoreWebView2Environment* envToReturn = nullptr;
+                wil::com_ptr<ICoreWebView2Environment> envToReturn;
                 bool failed = false;
                 
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
                     
+                    if (!lifecycle_.AcceptCallback(generation)) return S_OK;
                     if (FAILED(result) || !env) {
                         FB2K_console_formatter() << "[WebView2 UI] Failed to create environment, HRESULT: 0x" 
                                                  << pfc::format_hex((uint32_t)result);
                         // 提取等待者，在锁外以 nullptr 回调
                         callbacksToInvoke = std::move(pendingCallbacks_);
                         pendingCallbacks_.clear();
-                        creating_ = false;
+                        lifecycle_.creating = false;
                         failed = true;
                     } else {
                         environment_ = env;
-                        ready_ = true;
-                        creating_ = false;
-                        envToReturn = environment_.get();
+                        lifecycle_.ready = true;
+                        lifecycle_.creating = false;
+                        envToReturn = environment_;
                         
                         // Move callbacks to local vector to call outside lock
                         callbacksToInvoke = std::move(pendingCallbacks_);
@@ -302,6 +312,10 @@ void WebViewEnvironment::CreateEnvironmentInternal() {
                 if (failed) {
                     // 通知所有等待者环境创建失败
                     for (auto& cb : callbacksToInvoke) {
+                        {
+                            std::lock_guard<std::mutex> lock(mutex_);
+                            if (!lifecycle_.AcceptCallback(generation)) break;
+                        }
                         if (cb) cb(nullptr);
                     }
                     return result;
@@ -311,9 +325,11 @@ void WebViewEnvironment::CreateEnvironmentInternal() {
                 
                 // Call all pending callbacks outside lock to avoid deadlock
                 for (auto& cb : callbacksToInvoke) {
-                    if (cb) {
-                        cb(envToReturn);
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        if (!lifecycle_.AcceptCallback(generation)) break;
                     }
+                    if (cb) cb(envToReturn.get());
                 }
                 
                 return S_OK;
@@ -324,59 +340,133 @@ void WebViewEnvironment::CreateEnvironmentInternal() {
     if (FAILED(hr)) {
         FB2K_console_formatter() << "[WebView2 UI] CreateCoreWebView2EnvironmentWithOptions failed: 0x" 
                                  << pfc::format_hex((uint32_t)hr);
-        DrainPendingCallbacksOnFailure();
+        DrainPendingCallbacksOnFailure(generation);
     }
 }
 
-void WebViewEnvironment::DrainPendingCallbacksOnFailure() {
-    std::vector<EnvironmentCallback> failedCallbacks;
+void WebViewEnvironment::DrainPendingCallbacksOnFailure(std::uint64_t generation) {
+    std::vector<EnvironmentCallback> callbacks;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        creating_ = false;
-        failedCallbacks = std::move(pendingCallbacks_);
-        pendingCallbacks_.clear();
+        if (!lifecycle_.AcceptCallback(generation)) return;
+        lifecycle_.creating = false;
+        callbacks.swap(pendingCallbacks_);
     }
-    // 在锁外回调，避免死锁
-    for (auto& cb : failedCallbacks) {
+    for (auto& cb : callbacks) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!lifecycle_.AcceptCallback(generation)) break;
+        }
         if (cb) cb(nullptr);
     }
 }
 
 void WebViewEnvironment::Invalidate(const char* reason) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    if (!ready_) {
-        // 已经不处于就绪态（未创建过 / 已作废 / 正在创建），无需重复处理。
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!lifecycle_.Invalidate()) return;
+        pendingCallbacks_.clear();
+    }
+    WebViewHost::WriteLifecycleLog(std::string("event=environment.invalidate reason=") +
+        (reason && reason[0] ? reason : "unspecified"));
+}
+
+namespace {
+// Bound even with a constantly busy queue. Preserve WM_QUIT for the outer loop.
+void PumpCleanupMessages(DWORD milliseconds, const std::function<bool()>& complete) {
+    const ULONGLONG deadline = GetTickCount64() + milliseconds;
+    bool quit = false;
+    int quitCode = 0;
+    do {
+        MSG msg{};
+        for (unsigned count = 0; count < 64 && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE); ++count) {
+            if (msg.message == WM_QUIT) {
+                quit = true;
+                quitCode = static_cast<int>(msg.wParam);
+            } else {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            if (GetTickCount64() >= deadline) break;
+        }
+        if (complete() || GetTickCount64() >= deadline) break;
+        MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    } while (GetTickCount64() < deadline);
+    if (quit) PostQuitMessage(quitCode);
+}
+}
+
+void WebViewEnvironment::ReleaseEnvironment(bool shutdown) {
+    if (!core_api::is_main_thread()) {
+        WebViewHost::WriteLifecycleLog("event=environment.release.error reason=wrongThread");
         return;
     }
-    
-    // 只清就绪标记。旧 environment_ COM 引用不主动释放：WebView2 运行时在
-    // 浏览器进程退出后仍可能有异步清理回调访问它（理由同 Shutdown）。
-    // 下一次 GetEnvironment 会走创建分支，成功后 environment_ = env 自然替换。
-    ready_ = false;
-    
-    FB2K_console_formatter()
-        << "[WebView2 UI] WebView2 environment invalidated, reason: "
-        << (reason && reason[0] ? reason : "unspecified");
+    std::vector<WebViewHost*> hosts;
+    wil::com_ptr<ICoreWebView2Environment5> environment5;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (lifecycle_.terminal && !lifecycle_.shuttingDown_) return;
+        if (!lifecycle_.BeginRelease(shutdown)) return;
+        pendingCallbacks_.clear();
+        hosts.assign(hosts_.begin(), hosts_.end());
+        if (environment_) environment_.try_query_to(&environment5);
+    }
+    // WebView2 has no controller Closed event. BrowserProcessExited is the
+    // runtime cleanup signal; old runtimes take the bounded timeout path.
+    const auto exited = std::make_shared<std::atomic<bool>>(false);
+    EventRegistrationToken token{};
+    const bool subscribed = environment5 && SUCCEEDED(environment5->add_BrowserProcessExited(
+        Callback<ICoreWebView2BrowserProcessExitedEventHandler>(
+            [exited](ICoreWebView2Environment*, ICoreWebView2BrowserProcessExitedEventArgs*) -> HRESULT {
+                exited->store(true, std::memory_order_release);
+                return S_OK;
+            }).Get(), &token));
+    webview_recycle::ReleaseSequence(
+        [&] {
+            for (auto* host : hosts) {
+                bool registered;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    registered = hosts_.contains(host);
+                }
+                if (registered) host->CloseForEnvironmentRecycle();
+            }
+        },
+        [&] { PumpCleanupMessages(2000, [&] { return exited->load(std::memory_order_acquire); }); },
+        [&] {
+            if (subscribed) environment5->remove_BrowserProcessExited(token);
+            environment5.reset(); // QI reference must not keep the old environment alive
+            wil::com_ptr<ICoreWebView2Environment> old;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                old.swap(environment_);
+            }
+            old.reset(); // never release COM while holding the state lock
+        },
+        [&] { PumpCleanupMessages(500, [] { return false; }); });
+    std::string pendingPids;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        lifecycle_.EndRelease();
+        for (auto it = browserProcesses_.begin(); it != browserProcesses_.end();) {
+            if (WaitForSingleObject(it->second.get(), 0) == WAIT_OBJECT_0) {
+                it = browserProcesses_.erase(it);
+            } else {
+                if (!pendingPids.empty()) pendingPids += ",";
+                pendingPids += std::to_string(it->first);
+                ++it;
+            }
+        }
+    }
+    WebViewHost::WriteLifecycleLog(std::string("event=environment.released envReleased=1 reason=") +
+        (shutdown ? "shutdown" : "invalidate") + " browserExited=" +
+        (exited->load(std::memory_order_acquire) ? "1" : "0") +
+        " waitTimedOut=" + (exited->load(std::memory_order_acquire) ? "0" : "1") +
+        " pendingBrowserPids=" + (pendingPids.empty() ? "none" : pendingPids));
 }
 
 void WebViewEnvironment::Shutdown() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    // 不再主动释放 environment_ COM 引用。
-    // controller_->Close() 是异步操作，WebView2 运行时在关闭后仍有后台清理任务。
-    // 若在此处释放最后一个 ICoreWebView2Environment 引用，运行时的异步回调会
-    // 访问已销毁对象，导致未捕获异常 → std::terminate → abort。
-    // 让 COM 运行时在进程退出时自然回收。
-    if (environment_) {
-        console::print("[WebView2 UI] WebView2 environment marked for natural release");
-    }
-    
-    ready_ = false;
-    creating_ = false;
-    pendingCallbacks_.clear();
-    
-    console::print("[WebView2 UI] WebView2 environment shutdown complete");
+    ReleaseEnvironment(true);
 }
 
 // ============================================

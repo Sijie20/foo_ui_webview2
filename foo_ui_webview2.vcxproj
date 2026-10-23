@@ -428,6 +428,8 @@
     <ClInclude Include="src\core\FrontendDirectoryResolver.h" />
     <ClInclude Include="src\window\BackgroundSuspendPolicy.h" />
     <ClInclude Include="src\window\MainWindow.h" />
+    <ClInclude Include="src\window\ViewportResizePolicy.h" />
+    <ClInclude Include="src\window\TestbedCaptionPolicy.h" />
     <ClInclude Include="src\window\MainWindowInternal.h" />
     <ClInclude Include="src\window\PopupWindow.h" />
     <ClInclude Include="src\window\MenuOverlayHost.h" />

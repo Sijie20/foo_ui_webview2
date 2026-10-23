@@ -102,7 +102,8 @@ void WebViewHost::SetupSettings() {
     // ============================================
     controller_->add_AcceleratorKeyPressed(
         Callback<ICoreWebView2AcceleratorKeyPressedEventHandler>(
-            [this](ICoreWebView2Controller* /*sender*/, ICoreWebView2AcceleratorKeyPressedEventArgs* args) {
+            [this, state = suspendState_](ICoreWebView2Controller* /*sender*/, ICoreWebView2AcceleratorKeyPressedEventArgs* args) {
+                if (!state->CanRun()) return S_OK;
                 COREWEBVIEW2_KEY_EVENT_KIND kind;
                 args->get_KeyEventKind(&kind);
                 

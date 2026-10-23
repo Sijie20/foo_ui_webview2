@@ -413,6 +413,12 @@
     <ClInclude Include="src\window\MainWindow.h">
       <Filter>src\window</Filter>
     </ClInclude>
+    <ClInclude Include="src\window\ViewportResizePolicy.h">
+      <Filter>src\window</Filter>
+    </ClInclude>
+    <ClInclude Include="src\window\TestbedCaptionPolicy.h">
+      <Filter>src\window</Filter>
+    </ClInclude>
     <ClInclude Include="src\window\MainWindowInternal.h">
       <Filter>src\window</Filter>
     </ClInclude>

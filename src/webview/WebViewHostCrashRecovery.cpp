@@ -25,8 +25,9 @@ void WebViewHost::SetupProcessFailedHandling() {
 
     HRESULT hr = webview_->add_ProcessFailed(
         Callback<ICoreWebView2ProcessFailedEventHandler>(
-            [this](ICoreWebView2* /*sender*/,
+            [this, state = suspendState_](ICoreWebView2* /*sender*/,
                    ICoreWebView2ProcessFailedEventArgs* args) -> HRESULT {
+                if (!state->CanRun()) return S_OK;
                 COREWEBVIEW2_PROCESS_FAILED_KIND kind =
                     COREWEBVIEW2_PROCESS_FAILED_KIND_UNKNOWN_PROCESS_EXITED;
                 if (args) {
