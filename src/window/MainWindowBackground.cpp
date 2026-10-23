@@ -131,50 +131,100 @@ void MainWindow::HandleRestoredPageHealthResult(bool healthy, const char* reason
              PAGE_HEALTH_RETRY_DELAY_MS, nullptr);
 }
 
-void MainWindow::ScheduleProcessDeadRebuild(const char* reason) {
-    const char* rebuildReason = (reason && reason[0]) ? reason : "browser-process-exited";
-    if (!hwnd_ || !IsWindow(hwnd_)) {
+void MainWindow::SetWebViewRecoveryStatus(const wchar_t* text) {
+    if (!text) {
+        if (webViewRecoveryStatus_) DestroyWindow(webViewRecoveryStatus_);
+        webViewRecoveryStatus_ = nullptr;
         return;
     }
+    if (!hwnd_ || !IsWindow(hwnd_)) return;
+    RECT rect{};
+    GetClientRect(hwnd_, &rect);
+    if (!webViewRecoveryStatus_) {
+        webViewRecoveryStatus_ = CreateWindowExW(0, L"STATIC", text,
+            WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE,
+            0, 0, rect.right, rect.bottom, hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
+    }
+    if (webViewRecoveryStatus_) {
+        SetWindowTextW(webViewRecoveryStatus_, text);
+        SetWindowPos(webViewRecoveryStatus_, HWND_TOP, 0, 0, rect.right, rect.bottom,
+                     SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    }
+}
 
+void MainWindow::ScheduleProcessDeadRebuild(const char* reason) {
+    if (!hwnd_ || !IsWindow(hwnd_) || webViewRecoveryFailed_ ||
+        webViewRebuildInProgress_ || webViewRebuildQueued_) return;
+
+    webViewRecoveryReason_ = (reason && reason[0]) ? reason : "browser-process-exited";
     const auto decision = webview_crash_policy::DecideBrowserExitRebuild(
-        browserExitRebuildAttempts_,
-        browserExitRebuildWindowStartMs_,
-        GetTickCount64(),
-        webViewRebuildInProgress_);
+        browserExitRebuildAttempts_, browserExitRebuildWindowStartMs_, GetTickCount64(), false);
     browserExitRebuildAttempts_ = decision.nextAttempts;
     browserExitRebuildWindowStartMs_ = decision.nextWindowStartMs;
+    webViewRebuildQueued_ = true;
+    webViewRebuildWaitingForWindow_ = decision.limitExhausted;
+    SetWebViewRecoveryStatus(L"WebView 正在重建，请稍候…");
+    LogWebViewLifecycle(decision.limitExhausted ? "rebuild.deferred" : "rebuild.scheduled",
+        "reason=" + webViewRecoveryReason_ +
+        " attempts=" + std::to_string(decision.nextAttempts) +
+        " retryDelayMs=" + std::to_string(decision.retryDelayMs));
+    // Only enqueue here: never destroy the host on its COM callback stack.
+    if (!SetTimer(hwnd_, PROCESS_DEAD_REBUILD_TIMER_ID, decision.retryDelayMs, nullptr)) {
+        webViewRebuildQueued_ = false;
+        webViewRecoveryFailed_ = true;
+        SetWebViewRecoveryStatus(L"WebView 恢复失败：无法安排重试。请重新启动 foobar2000。");
+        LogWebViewLifecycle("rebuild.error-ui", "reason=set-timer-failed");
+    }
+}
 
-    if (!decision.shouldRebuild) {
-        LogWebViewLifecycle("rebuild.skipped",
-            std::string("reason=") + rebuildReason +
-            " limitExhausted=" + (decision.limitExhausted ? "1" : "0") +
-            " attempts=" + std::to_string(decision.nextAttempts));
-        if (decision.limitExhausted) {
-            console::printf("[WebView2 UI] WebView browser process keeps dying "
-                            "(%u rebuilds within the throttle window); giving up. "
-                            "Third-party overlay/injection hooks are a common cause "
-                            "- see webview_crash.log. Restart foobar2000 to retry.",
-                            decision.nextAttempts);
-        }
+void MainWindow::RunQueuedWebViewRebuild() {
+    if (!webViewRebuildQueued_ || webViewRecoveryFailed_) return;
+    webViewRebuildQueued_ = false;
+    // Another path may have restored the surface while this timer was pending.
+    if (IsWebViewReady() && !IsWebViewProcessDead()) {
+        SetWebViewRecoveryStatus(nullptr);
         return;
     }
+    if (webViewRebuildWaitingForWindow_) {
+        const std::string reason = webViewRecoveryReason_;
+        ScheduleProcessDeadRebuild(reason.c_str());
+        return;
+    }
+    const std::string reason = webViewRecoveryReason_;
+    RebuildWebViewAfterHealthFailure(reason.c_str());
+}
 
-    LogWebViewLifecycle("rebuild.scheduled",
-        std::string("reason=") + rebuildReason +
-        " attempts=" + std::to_string(decision.nextAttempts));
-    // 延迟到下一消息周期：ProcessFailed 是 COM 回调，不能在其栈上销毁宿主。
-    KillTimer(hwnd_, PROCESS_DEAD_REBUILD_TIMER_ID);
-    SetTimer(hwnd_, PROCESS_DEAD_REBUILD_TIMER_ID,
-             PROCESS_DEAD_REBUILD_DELAY_MS, nullptr);
+void MainWindow::HandleWebViewRebuildFailure(const char* reason) {
+    if (!webViewRebuildInProgress_) return; // sync + async failure must count once
+    webViewRebuildInProgress_ = false;
+    KillTimer(hwnd_, REBUILD_WATCHDOG_TIMER_ID);
+    ++webViewRecoveryFailures_;
+    LogWebViewLifecycle("rebuild.failed", std::string("reason=") + reason);
+    if (webViewRecoveryFailures_ >= webview_crash_policy::kBrowserRebuildAttemptLimit) {
+        webViewRecoveryFailed_ = true;
+        webViewRebuildQueued_ = false;
+        KillTimer(hwnd_, PROCESS_DEAD_REBUILD_TIMER_ID);
+        SetWebViewRecoveryStatus(L"WebView 恢复失败（已自动重试 8 次）。请重新启动 foobar2000，详情见 webview_lifecycle.log。");
+        LogWebViewLifecycle("rebuild.error-ui", std::string("reason=") + reason);
+        return;
+    }
+    ScheduleProcessDeadRebuild(reason);
 }
 
 bool MainWindow::RebuildWebViewAfterHealthFailure(const char* reason) {
-    if (webViewRebuildInProgress_ || !hwnd_ || !IsWindow(hwnd_)) {
+    if (webViewRebuildInProgress_ || webViewRecoveryFailed_ || !hwnd_ || !IsWindow(hwnd_)) {
         return false;
     }
 
+    webViewRebuildQueued_ = false;
     webViewRebuildInProgress_ = true;
+    SetWebViewRecoveryStatus(L"WebView 正在重建，请稍候…");
+    if (!SetTimer(hwnd_, REBUILD_WATCHDOG_TIMER_ID, REBUILD_WATCHDOG_TIMEOUT_MS, nullptr)) {
+        // Scheduling failure is terminal and visible, never an unobserved hang.
+        webViewRecoveryFailures_ = webview_crash_policy::kBrowserRebuildAttemptLimit - 1;
+        HandleWebViewRebuildFailure("watchdog-timer-failed");
+        return false;
+    }
     LogWebViewLifecycle("rebuild.begin",
         std::string("reason=") + (reason && reason[0] ? reason : "page-health"));
     bgSuspendHealthRecoveryAttempts_ = 0;
@@ -196,8 +246,7 @@ bool MainWindow::RebuildWebViewAfterHealthFailure(const char* reason) {
     LogWebViewLifecycle(started ? "rebuild.started" : "rebuild.start-failed",
         std::string("reason=") + (reason && reason[0] ? reason : "page-health"));
     if (!started) {
-        webViewRebuildInProgress_ = false;
-        console::print("[WebView2 UI] WebView rebuild failed to start");
+        HandleWebViewRebuildFailure("initialize-start-failed");
     }
     return started;
 }

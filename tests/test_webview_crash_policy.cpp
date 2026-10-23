@@ -152,7 +152,7 @@ TEST(WebViewCrashPolicyTest, RepeatedBrowserExitsAccumulateUntilLimit) {
         attempts = d.nextAttempts;
         windowStart = d.nextWindowStartMs;
     }
-    // 第 limit+1 次落在同一窗口内，必须放弃并上报配额用尽。
+    // 第 limit+1 次落在同一窗口内，必须排队并上报配额用尽。
     const auto blocked = DecideBrowserExitRebuild(attempts, windowStart, 9000, false);
     EXPECT_FALSE(blocked.shouldRebuild);
     EXPECT_TRUE(blocked.limitExhausted);
@@ -192,7 +192,7 @@ TEST(WebViewCrashPolicyTest, RebuildInFlightSuppressesDuplicateAndKeepsQuota) {
 }
 
 TEST(WebViewCrashPolicyTest, RebuildAndExhaustedAreMutuallyExclusive) {
-    // limitExhausted 是"放弃并提示用户"的信号，不可与已发起重建同时成立。
+    // limitExhausted 是"延迟后重新判定"的信号，不可与已发起重建同时成立。
     for (const unsigned attempts : {0u, 1u, kBrowserRebuildAttemptLimit,
                                     kBrowserRebuildAttemptLimit + 1u}) {
         for (const bool inFlight : {false, true}) {
@@ -200,4 +200,50 @@ TEST(WebViewCrashPolicyTest, RebuildAndExhaustedAreMutuallyExclusive) {
             EXPECT_FALSE(d.shouldRebuild && d.limitExhausted);
         }
     }
+}
+
+TEST(WebViewCrashPolicyTest, BackoffDoublesAndCapsAtFourSeconds) {
+    EXPECT_EQ(500u, BrowserRebuildBackoffMs(0));
+    EXPECT_EQ(1000u, BrowserRebuildBackoffMs(1));
+    EXPECT_EQ(2000u, BrowserRebuildBackoffMs(2));
+    for (unsigned attempt : {3u, 8u, 1000u, ~0u})
+        EXPECT_EQ(4000u, BrowserRebuildBackoffMs(attempt));
+}
+
+TEST(WebViewCrashPolicyTest, ExhaustedQuotaAlwaysSchedulesAndEventuallyRebuilds) {
+    unsigned long long now = 1001;
+    unsigned polls = 0;
+    for (;;) {
+        const auto d = DecideBrowserExitRebuild(kBrowserRebuildAttemptLimit, 1000, now, false);
+        if (d.shouldRebuild) {
+            EXPECT_EQ(1u, d.nextAttempts);
+            EXPECT_EQ(1000u + kBrowserRebuildWindowMs, now);
+            break;
+        }
+        ASSERT_TRUE(d.limitExhausted);
+        ASSERT_GT(d.retryDelayMs, 0u); // never silently lose pending work
+        ASSERT_LE(d.retryDelayMs, 4000u);
+        EXPECT_EQ(kBrowserRebuildAttemptLimit, d.nextAttempts);
+        EXPECT_EQ(1000u, d.nextWindowStartMs);
+        now += d.retryDelayMs;
+        ASSERT_LT(++polls, 10u);
+    }
+}
+
+TEST(WebViewCrashPolicyTest, LastDeferredRetryLandsExactlyOnWindowBoundary) {
+    const auto d = DecideBrowserExitRebuild(8, 1000, 30999, false);
+    ASSERT_TRUE(d.limitExhausted);
+    EXPECT_EQ(1u, d.retryDelayMs);
+    const auto retry = DecideBrowserExitRebuild(d.nextAttempts, d.nextWindowStartMs,
+                                               30999 + d.retryDelayMs, false);
+    EXPECT_TRUE(retry.shouldRebuild);
+    EXPECT_EQ(500u, retry.retryDelayMs);
+}
+
+TEST(WebViewCrashPolicyTest, InFlightHasNoRetryAndNeverConsumesQuota) {
+    const auto d = DecideBrowserExitRebuild(8, 1000, 31000, true);
+    EXPECT_FALSE(d.shouldRebuild);
+    EXPECT_FALSE(d.limitExhausted);
+    EXPECT_EQ(0u, d.retryDelayMs);
+    EXPECT_EQ(8u, d.nextAttempts);
 }

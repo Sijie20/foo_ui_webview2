@@ -131,7 +131,11 @@ void MainWindow::LogWebViewLifecycle(const char* event, const std::string& detai
                << " healthAttempts=" << bgSuspendHealthRecoveryAttempts_
                << " healthPending=" << (pageHealthProbePending_ ? 1 : 0)
                << " healthGeneration=" << pageHealthProbeGeneration_
-               << " rebuildInProgress=" << (webViewRebuildInProgress_ ? 1 : 0)
+               << " rebuildInProgress=" << ((webViewRebuildInProgress_ || webViewRebuildQueued_) ? 1 : 0)
+               << " rebuildActive=" << (webViewRebuildInProgress_ ? 1 : 0)
+               << " rebuildQueued=" << (webViewRebuildQueued_ ? 1 : 0)
+               << " recoveryFailed=" << (webViewRecoveryFailed_ ? 1 : 0)
+               << " recoveryFailures=" << webViewRecoveryFailures_
                << " minimized=" << (isMinimized_ ? 1 : 0)
                << " windowVisible="
                << (hwnd_ && IsWindow(hwnd_) && IsWindowVisible(hwnd_) ? 1 : 0)

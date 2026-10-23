@@ -253,6 +253,12 @@ private:
     unsigned bgSuspendResumeRetryCount_ = 0;
     unsigned bgSuspendHealthRecoveryAttempts_ = 0;
     bool webViewRebuildInProgress_ = false;
+    bool webViewRebuildQueued_ = false;
+    bool webViewRebuildWaitingForWindow_ = false;
+    bool webViewRecoveryFailed_ = false;
+    unsigned webViewRecoveryFailures_ = 0;
+    HWND webViewRecoveryStatus_ = nullptr;
+    std::string webViewRecoveryReason_;
     bool pageHealthProbePending_ = false;
     uint64_t pageHealthProbeGeneration_ = 0;
     // 僵尸态重建的限流状态（webview_crash_policy::DecideBrowserExitRebuild 持有
@@ -346,7 +352,8 @@ private:
     // 僵尸态（浏览器进程退出 / Reload 失败）整窗重建的延迟调度。必须延迟：
     // ProcessFailed 是 COM 回调，不能在其栈上销毁 WebViewHost 本体。
     static constexpr UINT_PTR PROCESS_DEAD_REBUILD_TIMER_ID = 127;
-    static constexpr DWORD PROCESS_DEAD_REBUILD_DELAY_MS = 500;
+    static constexpr UINT_PTR REBUILD_WATCHDOG_TIMER_ID = 128;
+    static constexpr DWORD REBUILD_WATCHDOG_TIMEOUT_MS = 15000;
     static constexpr UINT_PTR DEFERRED_BACKDROP_TIMER_ID = 130;
     static constexpr DWORD DEFERRED_BACKDROP_DELAY_MS = 200;
     static constexpr UINT_PTR BACKDROP_KICK_EXIT_TIMER_ID = 131;
@@ -442,6 +449,9 @@ private:
     // 僵尸态整窗重建的唯一入口：限流后经 PROCESS_DEAD_REBUILD_TIMER_ID 延迟到
     // 下一消息周期执行，避免在 ProcessFailed 的 COM 回调栈上销毁宿主。
     void ScheduleProcessDeadRebuild(const char* reason);
+    void RunQueuedWebViewRebuild();
+    void HandleWebViewRebuildFailure(const char* reason);
+    void SetWebViewRecoveryStatus(const wchar_t* text);
     void FinalizeStartupRevealSettlement();
     // 拖拽期间的 put_Bounds 合并入口；返回 true 表示本次已被合并（调用方不应再直接 Resize）。
     bool CoalesceInteractiveResize(bool force);

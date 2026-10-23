@@ -51,23 +51,30 @@ constexpr FailureClass ClassifyFailedKind(bool isRenderKind, bool isBrowserKind)
 // （实测：浏览器进程被第三方注入钩子打崩后，宿主带着僵尸 controller 运行
 // 了 10 小时）。但重建不能无界重试：若崩溃源是每次创建后必然复现的外部
 // 因素，无界重试会退化成"重建→崩溃→重建"死循环，持续重启浏览器进程并
-// 重新导航。故按"时间窗内最多 N 次"限流，窗口过期后重新计数。
+// 重新导航。故按"时间窗内最多 N 次"限流，排队等待窗口过期后自动重试。
 // ==========================================================================
 
 // 时间窗内允许的重建次数上限。
-constexpr unsigned kBrowserRebuildAttemptLimit = 3;
+constexpr unsigned kBrowserRebuildAttemptLimit = 8;
 // 限流时间窗长度（毫秒）。窗口过期即视为新一轮故障，重新计数。
-constexpr unsigned long long kBrowserRebuildWindowMs = 600000;  // 10 分钟
+constexpr unsigned long long kBrowserRebuildWindowMs = 30000;
+
+// A quota defers work; it never cancels recovery. Backoff is capped so a
+// healthy runtime can recover promptly even after several independent exits.
+constexpr unsigned BrowserRebuildBackoffMs(unsigned attempts) {
+    return 500u << (attempts < 3u ? attempts : 3u);
+}
 
 struct BrowserRebuildDecision {
     // 是否发起本次重建。
     bool shouldRebuild;
-    // 是否因窗口内次数用尽而放弃（调用方据此提示用户手动干预）。
+    // 配额用尽时必须排队，在 retryDelayMs 后重新判定，不能放弃恢复。
     bool limitExhausted;
     // 调用方应保存的窗口内累计次数。
     unsigned nextAttempts;
     // 调用方应保存的窗口起点（毫秒 tick）。
     unsigned long long nextWindowStartMs;
+    unsigned retryDelayMs;
 };
 
 // attempts / windowStartMs 是调用方持有的限流状态，nowMs 取单调递增的
@@ -82,18 +89,22 @@ constexpr BrowserRebuildDecision DecideBrowserExitRebuild(
     unsigned long long windowMs = kBrowserRebuildWindowMs) {
     if (rebuildInFlight) {
         // 重建在途期间的二次崩溃事件不占配额：本次不发起，状态原样保留。
-        return BrowserRebuildDecision{false, false, attempts, windowStartMs};
+        return BrowserRebuildDecision{false, false, attempts, windowStartMs, 0};
     }
     // attempts == 0 表示尚无记录；否则按窗口是否过期决定是重新计数还是累加。
     const bool windowExpired = attempts == 0 || (nowMs - windowStartMs) >= windowMs;
     if (windowExpired) {
-        return BrowserRebuildDecision{true, false, 1u, nowMs};
+        return BrowserRebuildDecision{true, false, 1u, nowMs, BrowserRebuildBackoffMs(0)};
     }
     if (attempts < limit) {
-        return BrowserRebuildDecision{true, false, attempts + 1u, windowStartMs};
+        return BrowserRebuildDecision{true, false, attempts + 1u, windowStartMs,
+                                      BrowserRebuildBackoffMs(attempts)};
     }
     // 配额用尽：保留窗口状态，等窗口自然过期后才允许再次重建。
-    return BrowserRebuildDecision{false, true, attempts, windowStartMs};
+    const auto remaining = windowMs - (nowMs - windowStartMs);
+    const auto backoff = BrowserRebuildBackoffMs(attempts);
+    return BrowserRebuildDecision{false, true, attempts, windowStartMs,
+        static_cast<unsigned>(remaining < backoff ? remaining : backoff)};
 }
 
 // reloadSucceeded 仅在 Render 类有意义（其他分类不会发起 Reload）。

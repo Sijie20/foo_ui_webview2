@@ -817,11 +817,12 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             if (wParam == PROCESS_DEAD_REBUILD_TIMER_ID) {
                 KillTimer(hwnd_, PROCESS_DEAD_REBUILD_TIMER_ID);
-                // 复检僵尸标记：调度与执行之间若已有其他路径完成重建
-                //（例如面板重挂载），此处不得再销毁一个健康的 WebView。
-                if (IsWebViewProcessDead()) {
-                    RebuildWebViewAfterHealthFailure("browser-process-exited");
-                }
+                RunQueuedWebViewRebuild();
+                return 0;
+            }
+            if (wParam == REBUILD_WATCHDOG_TIMER_ID) {
+                KillTimer(hwnd_, REBUILD_WATCHDOG_TIMER_ID);
+                if (webViewRebuildInProgress_) HandleWebViewRebuildFailure("create-timeout");
                 return 0;
             }
             if (wParam == DEFERRED_BACKDROP_TIMER_ID) {
@@ -1341,6 +1342,9 @@ void MainWindow::OnDestroy() {
     KillTimer(hwnd_, BG_RESUME_RETRY_TIMER_ID);
     KillTimer(hwnd_, PAGE_HEALTH_RETRY_TIMER_ID);
     KillTimer(hwnd_, PROCESS_DEAD_REBUILD_TIMER_ID);
+    KillTimer(hwnd_, REBUILD_WATCHDOG_TIMER_ID);
+    webViewRebuildQueued_ = webViewRebuildInProgress_ = false;
+    webViewRecoveryStatus_ = nullptr; // child is destroyed with its parent
     KillTimer(hwnd_, BACKDROP_KICK_EXIT_TIMER_ID);
     KillTimer(hwnd_, RESIZE_COALESCE_TIMER_ID);
     resizeSchedule_.Reset();
@@ -1554,6 +1558,12 @@ void MainWindow::OnPaint() {
 void MainWindow::OnWebViewReady() {
     LOG("MainWindow::OnWebViewReady");
     webViewRebuildInProgress_ = false;
+    webViewRebuildQueued_ = false;
+    webViewRecoveryFailed_ = false;
+    webViewRecoveryFailures_ = 0;
+    KillTimer(hwnd_, PROCESS_DEAD_REBUILD_TIMER_ID);
+    KillTimer(hwnd_, REBUILD_WATCHDOG_TIMER_ID);
+    SetWebViewRecoveryStatus(nullptr);
     LogWebViewLifecycle("window.webview-ready");
     
     // 初始化 WindowManager（windowId 已在 OnCreate 中设置）
@@ -1698,9 +1708,7 @@ void MainWindow::OnWebViewInitFailed() {
     // 回调里。若不在此处释放重建锁，RebuildWebViewAfterHealthFailure 会返回
     // true 而锁永不清零，后续所有重建（含健康探针路径）被永久堵死。
     if (webViewRebuildInProgress_) {
-        webViewRebuildInProgress_ = false;
-        LogWebViewLifecycle("rebuild.failed", "reason=controller-create-failed");
-        console::print("[WebView2 UI] WebView rebuild failed during controller creation");
+        HandleWebViewRebuildFailure("controller-create-failed");
     }
     WebViewPanel::OnWebViewInitFailed();
 }
